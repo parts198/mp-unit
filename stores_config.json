@@ -1,0 +1,42 @@
+{
+  "stores": [
+    {
+      "name": "Zekkert",
+      "client_id": "2893128",
+      "api_key": "8b60e1d4-cfa9-4cc9-9fd4-f19fc995a504",
+      "warehouse": [
+        { "name": "СПБ", "warehouse_id": "1020005000176328" },
+        { "name": "МСК", "warehouse_id": "1020005000191845" }
+      ],
+      "spreadsheet_id": "1t3Bgix9YuCJ7YoNS9o7Ja5aDm6zYUgA0kgUZAR-dUUI",
+      "vat": "0.2",
+      "password": "9516813427"
+    },
+    {
+      "name": "AutоЛинкс",
+      "client_id": "2792968",
+      "api_key": "98302420-0423-47b8-b24c-80cfb57582bb",
+      "warehouse": [
+        { "name": "LYNXauto СПб", "warehouse_id": "1020005000158685" },
+        { "name": "Miles СПб", "warehouse_id": "1020005000285489" },
+        { "name": "LYNXauto МСК", "warehouse_id": "1020005000285600" },
+        { "name": "Miles МСК", "warehouse_id": "1020005000285498" }
+      ],
+      "spreadsheet_id": "1t3Bgix9YuCJ7YoNS9o7Ja5aDm6zYUgA0kgUZAR-dUUI",
+      "vat": "0.2",
+      "password": "9516813427"
+    },
+    {
+      "name": "Фебест",
+      "client_id": "3078847",
+      "api_key": "eacbc0a2-386b-48a8-84dd-4a9a4cd4f841",
+      "warehouse": [
+        { "name": "МСК", "warehouse_id": "1020005000237852" },
+        { "name": "СПб", "warehouse_id": "1020005000233916" }
+      ],
+      "spreadsheet_id": "1t3Bgix9YuCJ7YoNS9o7Ja5aDm6zYUgA0kgUZAR-dUUI",
+      "vat": "0.2",
+      "password": "9516813427"
+    }
+  ]
+}

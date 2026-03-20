@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Магазины — OZON</title>
+  <link rel="stylesheet" href="theme.css"/>
+  <style>
+    .controls{gap:10px; align-items:center; flex-wrap:wrap;}
+    table{width:100%; border-collapse:collapse;}
+    th,td{padding:8px 10px; border-bottom:1px solid rgba(0,0,0,.08); vertical-align:top;}
+    th{white-space:nowrap;}
+    .right{text-align:right;}
+    .log{max-height:220px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace; font-size:12px;}
+    input[type="text"]{min-width:180px;}
+    .pill{display:inline-block; padding:2px 8px; border-radius:999px; background:rgba(47,129,247,.12); border:1px solid rgba(47,129,247,.25);}
+  </style>
+  <script src="stores.secrets.js"></script>
+  <script src="stores_runtime.js"></script>
+  <script src="ozon_date_range.js"></script>
+  <script src="ozon_api_patch.js"></script>
+  <script src="ozon_server_cache.js"></script>
+  <script src="ozon_api.js"></script>
+
+<script src="/ozon_orders_accruals_patch.js?v=2026-02-05_065103"></script>
+<script src="/ozon_costprice_patch.js?v=2026-02-05_065103"></script>
+</head>
+<body>
+<header>
+  <div class="title">Магазины</div>
+  <nav class="nav"></nav>
+</header>
+
+<div class="controls" style="padding:0 20px 12px;">
+  <button class="btn" id="btnReload">Перечитать stores.secrets.js (слияние)</button>
+  <button class="btn" id="btnReset">Сбросить локальные правки</button>
+  <button class="btn" id="btnExport">Экспорт JSON</button>
+  <label class="btn" style="display:inline-flex; gap:8px; align-items:center;">
+    Импорт JSON <input type="file" id="fileImport" accept="application/json" style="display:none;">
+  </label>
+</div>
+
+<main>
+  <section class="card">
+    <h2>Статус</h2>
+    <div id="statusText">—</div>
+    <div class="muted" style="margin-top:6px;">
+      Магазины сохраняются в <span class="pill">localStorage</span> этого домена и видны на всех страницах в этом же браузере/профиле.
+      Для “серверного” хранения — правьте <code>stores.secrets.js</code> через SSH.
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Добавить магазин</h2>
+    <div class="controls">
+      <input id="inName" type="text" placeholder="Название"/>
+      <input id="inClient" type="text" placeholder="Client-Id"/>
+      <input id="inKey" type="text" placeholder="Api-Key"/>
+      <input id="inVat" type="text" placeholder="НДС (например 0)"/>
+      <button class="btn btn-primary" id="btnAdd">Добавить</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Список</h2>
+    <div class="table-wrap" id="tableWrap"></div>
+  </section>
+
+  <section class="card">
+    <h2>Лог</h2>
+    <div class="log" id="logBox"></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const elStatus = document.getElementById('statusText');
+  const elLog = document.getElementById('logBox');
+  const wrap = document.getElementById('tableWrap');
+
+  const inName = document.getElementById('inName');
+  const inClient = document.getElementById('inClient');
+  const inKey = document.getElementById('inKey');
+  const inVat = document.getElementById('inVat');
+
+  function esc(s){ return String(s ?? '').replace(/[&<>"]/g,c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
+  function log(m){
+    const div = document.createElement('div');
+    div.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${esc(m)}`;
+    elLog.appendChild(div);
+    elLog.scrollTop = elLog.scrollHeight;
+  }
+
+  function load(){ return (window.ozonLoadStores ? window.ozonLoadStores() : []) || []; }
+  function save(list){ return (window.ozonSaveStores ? window.ozonSaveStores(list) : list) || []; }
+
+  function render(){
+    const stores = load();
+    elStatus.textContent = 'Магазинов: ' + stores.length;
+
+    const t = document.createElement('table');
+    t.innerHTML = `
+      <thead>
+        <tr>
+          <th>#</th><th>Название</th><th>Client-Id</th><th>Api-Key</th><th>НДС</th><th class="right">Действия</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+    const tb = t.querySelector('tbody');
+
+    stores.forEach((s,i) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${i+1}</td>
+        <td>${esc(s.name)}</td>
+        <td><code>${esc(s.client_id)}</code></td>
+        <td><code>${esc(String(s.api_key||'').slice(0,4))}…</code></td>
+        <td>${esc(s.vat ?? '')}</td>
+        <td class="right"><button class="btn btn-danger" data-del="${esc(s.client_id)}">Удалить</button></td>
+      `;
+      tb.appendChild(tr);
+    });
+
+    wrap.innerHTML = '';
+    wrap.appendChild(t);
+
+    wrap.querySelectorAll('button[data-del]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-del');
+        const next = load().filter(x => String(x.client_id) !== String(id));
+        save(next);
+        log('Удалён client_id=' + id);
+        render();
+      });
+    });
+  }
+
+  document.getElementById('btnAdd').addEventListener('click', () => {
+    const st = {
+      name: inName.value.trim(),
+      client_id: inClient.value.trim(),
+      api_key: inKey.value.trim(),
+      vat: inVat.value.trim()
+    };
+    if(!st.name || !st.client_id || !st.api_key){
+      alert('Заполните: Название, Client-Id, Api-Key');
+      return;
+    }
+    const cur = load();
+    cur.push(st);
+    save(cur);
+    log('Добавлен: ' + st.name);
+    inName.value=''; inClient.value=''; inKey.value=''; inVat.value='';
+    render();
+  });
+
+  document.getElementById('btnExport').addEventListener('click', () => {
+    const stores = load();
+    const blob = new Blob([JSON.stringify(stores,null,2)], {type:'application/json;charset=utf-8'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'stores.export.json';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },0);
+    log('Экспорт: stores.export.json');
+  });
+
+  document.getElementById('fileImport').addEventListener('change', async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if(!f) return;
+    try{
+      const txt = await f.text();
+      const arr = JSON.parse(txt);
+      if(!Array.isArray(arr)) throw new Error('JSON должен быть массивом');
+      save(arr);
+      log('Импортировано: ' + arr.length);
+      render();
+    }catch(err){
+      alert('Ошибка импорта: ' + (err && err.message ? err.message : String(err)));
+    }finally{
+      e.target.value='';
+    }
+  });
+
+  document.getElementById('btnReload').addEventListener('click', () => {
+    const stores = load();
+    log('Перечитано stores.secrets.js (слияние). Сейчас магазинов: ' + stores.length);
+    render();
+  });
+
+  document.getElementById('btnReset').addEventListener('click', () => {
+    if(!confirm('Сбросить локальные правки и вернуть только stores.secrets.js?')) return;
+    const stores = (window.ozonResetStoresToSecrets ? window.ozonResetStoresToSecrets() : []);
+    log('Сброс локальных правок. Сейчас магазинов: ' + stores.length);
+    render();
+  });
+
+  render();
+})();
+</script>
+
+<script src="nav.js"></script>
+<script src="table_sort.js"></script>
+<script src="ozon_prices_detach_patch.js"></script>
+</body>
+</html>

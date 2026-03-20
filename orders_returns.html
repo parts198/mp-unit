@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Заказы и возвраты — OZON</title>
+  <link rel="stylesheet" href="/theme.css"/>
+  <style>
+    .wrap{padding:14px 16px;}
+    .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
+    .card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:10px 12px;}
+    .kpis{display:grid; grid-template-columns:repeat(6,minmax(150px,1fr)); gap:10px; margin:12px 0;}
+    @media (max-width:1200px){.kpis{grid-template-columns:repeat(3,minmax(150px,1fr));}}
+    @media (max-width:700px){.kpis{grid-template-columns:repeat(2,minmax(150px,1fr));}}
+    .k-title{color:#6b7280;font-size:12px;}
+    .k-val{font-size:18px;font-weight:700;margin-top:4px;}
+    .grid2{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+    @media (max-width:1000px){.grid2{grid-template-columns:1fr;}}
+    table{width:100%;border-collapse:collapse;}
+    th,td{border-bottom:1px solid #eef2f7;padding:6px 8px;font-size:13px;}
+    th{background:#fafafa;text-align:left;position:sticky;top:0;}
+    .right{text-align:right;}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#eef2ff;font-size:12px;}
+    .btn{background:#2563eb;color:#fff;border:none;border-radius:8px;padding:8px 10px;cursor:pointer;}
+    .btn2{background:#111827;color:#fff;border:none;border-radius:8px;padding:8px 10px;cursor:pointer;}
+    .inp{padding:7px 8px;border:1px solid #d1d5db;border-radius:8px;}
+    .small{font-size:12px;color:#6b7280;}
+  </style>
+</head>
+<body>
+  <div id="topNav"></div>
+
+  <div class="wrap">
+    <div class="row">
+      <b style="font-size:18px;">Заказы и возвраты</b>
+      <span class="small" id="lastInfo"></span>
+    </div>
+
+    <div class="card" style="margin-top:10px;">
+      <div class="row">
+        <label>Период:</label>
+        <input class="inp" type="date" id="dateFrom">
+        <span>—</span>
+        <input class="inp" type="date" id="dateTo">
+
+        <label style="margin-left:10px;">Снапшот:</label>
+        <select class="inp" id="snapshotDate"></select>
+
+        <label style="margin-left:10px;">Магазины:</label>
+        <select class="inp" id="stores" multiple size="1" style="min-width:220px;"></select>
+
+        <button class="btn" id="btnLoad">Показать</button>
+        <button class="btn2" id="btnRefresh">Обновить (сохранить снапшот)</button>
+      </div>
+
+      <div class="row" style="margin-top:8px;">
+        <span class="pill">Пресеты:</span>
+        <button class="btn" data-preset="7">7</button>
+        <button class="btn" data-preset="14">14</button>
+        <button class="btn" data-preset="30">30</button>
+
+        <span style="margin-left:auto;" class="small" id="status"></span>
+      </div>
+    </div>
+
+    <div class="kpis" id="kpis"></div>
+
+    <div class="grid2">
+      <div class="card">
+        <div style="font-weight:700;margin-bottom:6px;">Динамика (сумма)</div>
+        <canvas id="chartSum" height="120"></canvas>
+      </div>
+      <div class="card">
+        <div style="font-weight:700;margin-bottom:6px;">Динамика (шт) + доля возвратов</div>
+        <canvas id="chartQty" height="120"></canvas>
+      </div>
+    </div>
+
+    <div class="grid2" style="margin-top:10px;">
+      <div class="card" style="max-height:420px; overflow:auto;">
+        <div style="font-weight:700;margin-bottom:6px;">По магазинам</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Магазин</th>
+              <th class="right">Заказы, шт</th>
+              <th class="right">Заказы, ₽</th>
+              <th class="right">Возвраты, шт</th>
+              <th class="right">Возвраты, ₽</th>
+              <th class="right">Доля, %</th>
+              <th>Аномалии</th>
+            </tr>
+          </thead>
+          <tbody id="tbStores"></tbody>
+        </table>
+      </div>
+
+      <div class="card" style="max-height:420px; overflow:auto;">
+        <div class="row" style="margin-bottom:6px;">
+          <div style="font-weight:700;">По SKU</div>
+          <input id="skuQ" class="inp" placeholder="фильтр по SKU..." style="margin-left:auto; min-width:200px;">
+          <button class="btn" id="btnSku">Найти</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th class="right">Заказы, ₽</th>
+              <th class="right">Возвраты, ₽</th>
+              <th class="right">Доля, %</th>
+              <th class="right">Заказы, шт</th>
+              <th class="right">Возвраты, шт</th>
+            </tr>
+          </thead>
+          <tbody id="tbSku"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:10px;">
+      <div class="row">
+        <b>Детализация</b>
+        <span class="pill">по order_id / return_id</span>
+        <input id="qId" class="inp" placeholder="поиск..." style="margin-left:auto; min-width:220px;">
+        <button class="btn" id="btnOrders">Заказы</button>
+        <button class="btn2" id="btnReturns">Возвраты</button>
+      </div>
+      <div style="max-height:420px; overflow:auto; margin-top:8px;">
+        <table>
+          <thead id="tbDetHead"></thead>
+          <tbody id="tbDetBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- навигация как на остальных страницах -->
+  <script src="/nav_common.js"></script>
+  <script src="/nav.js"></script>
+
+  <!-- хранилище магазинов (как у тебя сейчас) -->
+  <script src="/stores.secrets.js?v=2"></script>
+
+  <!-- если у тебя Chart.js уже внутри vendor.js — будет ок; если нет, просто графики не нарисуются -->
+  <script src="/vendor.js"></script>
+
+  <script>
+    const $ = (id)=>document.getElementById(id);
+    const fmt = new Intl.NumberFormat('ru-RU');
+    const fmtRub = new Intl.NumberFormat('ru-RU', { style:'currency', currency:'RUB', maximumFractionDigits:2 });
+
+    function todayISO(){ return new Date().toISOString().slice(0,10); }
+    function daysAgo(n){ return new Date(Date.now()-n*86400000).toISOString().slice(0,10); }
+
+    async function apiGet(action, params){
+      const qs = new URLSearchParams({action, ...params});
+      const r = await fetch('/api/orders_returns_api.php?' + qs.toString(), {cache:'no-store'});
+      return await r.json();
+    }
+    async function apiPost(action, body){
+      const r = await fetch('/api/orders_returns_api.php?action=' + encodeURIComponent(action), {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      });
+      return await r.json();
+    }
+
+    function getSelectedStores(){
+      const sel = $('stores');
+      const ids = Array.from(sel.selectedOptions).map(o=>o.value);
+      const all = (window.OZON_STORES || []);
+      return all.filter(s => ids.includes(String(s.client_id || s.clientId || '')));
+    }
+
+    let chartSum=null, chartQty=null;
+
+    function renderKpis(k){
+      const el = $('kpis');
+      const rs = (k.return_rate_sum||0)*100;
+      const rq = (k.return_rate_qty||0)*100;
+      const top = (k.top_reasons||[]).map(x=>`${x.reason||'—'} (${fmt.format(x.qty)} / ${fmtRub.format(x.sum)})`).join('; ');
+
+      el.innerHTML = [
+        ['Заказано, шт', fmt.format(k.orders_qty||0)],
+        ['Заказано, сумма', fmtRub.format(k.orders_sum||0)],
+        ['Возвраты, шт', fmt.format(k.returns_qty||0)],
+        ['Возвраты, сумма', fmtRub.format(k.returns_sum||0)],
+        ['Доля возвратов (сумма)', rs.toFixed(2)+'%'],
+        ['Доля возвратов (шт)', rq.toFixed(2)+'%'],
+      ].map(([t,v])=>`<div class="card"><div class="k-title">${t}</div><div class="k-val">${v}</div></div>`).join('') +
+      `<div class="card" style="grid-column:1/-1;">
+        <div class="k-title">Топ причин</div>
+        <div class="k-val" style="font-size:14px;">${top || '—'}</div>
+      </div>`;
+    }
+
+    function renderStores(rows){
+      const tb = $('tbStores');
+      tb.innerHTML = rows.map(r=>{
+        const rate = (r.return_rate_sum||0)*100;
+        return `<tr>
+          <td>${r.name||r.store_id}</td>
+          <td class="right">${fmt.format(r.orders_qty||0)}</td>
+          <td class="right">${fmtRub.format(r.orders_sum||0)}</td>
+          <td class="right">${fmt.format(r.returns_qty||0)}</td>
+          <td class="right">${fmtRub.format(r.returns_sum||0)}</td>
+          <td class="right">${rate.toFixed(2)}</td>
+          <td>${(r.anomalies||[]).join('; ')}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderSku(rows){
+      const tb = $('tbSku');
+      tb.innerHTML = rows.map(r=>{
+        const rate = (r.return_rate_sum||0)*100;
+        return `<tr>
+          <td>${r.sku}</td>
+          <td class="right">${fmtRub.format(r.orders_sum||0)}</td>
+          <td class="right">${fmtRub.format(r.returns_sum||0)}</td>
+          <td class="right">${rate.toFixed(2)}</td>
+          <td class="right">${fmt.format(r.orders_qty||0)}</td>
+          <td class="right">${fmt.format(r.returns_qty||0)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderDetailsOrders(rows){
+      $('tbDetHead').innerHTML = `<tr>
+        <th>День</th><th>Магазин</th><th>Схема</th><th>order_id</th>
+        <th class="right">шт</th><th class="right">₽</th>
+      </tr>`;
+      $('tbDetBody').innerHTML = rows.map(r=>`<tr>
+        <td>${r.created_day||''}</td>
+        <td>${r.store_id||''}</td>
+        <td>${r.schema||''}</td>
+        <td>${r.order_id||''}</td>
+        <td class="right">${fmt.format(r.oq||0)}</td>
+        <td class="right">${fmtRub.format(r.os||0)}</td>
+      </tr>`).join('');
+    }
+
+    function renderDetailsReturns(rows){
+      $('tbDetHead').innerHTML = `<tr>
+        <th>День</th><th>Магазин</th><th>return_id</th><th>order_id</th><th>Статус</th><th>Причина</th>
+        <th class="right">шт</th><th class="right">₽</th>
+      </tr>`;
+      $('tbDetBody').innerHTML = rows.map(r=>`<tr>
+        <td>${r.created_day||''}</td>
+        <td>${r.store_id||''}</td>
+        <td>${r.return_id||''}</td>
+        <td>${r.order_id||''}</td>
+        <td>${r.status||''}</td>
+        <td>${r.reason||''}</td>
+        <td class="right">${fmt.format(r.rq||0)}</td>
+        <td class="right">${fmtRub.format(r.rs||0)}</td>
+      </tr>`).join('');
+    }
+
+    function renderCharts(tsRows){
+      if (!window.Chart) return;
+
+      const labels = tsRows.map(x=>x.day);
+      const os = tsRows.map(x=>x.orders_sum||0);
+      const rs = tsRows.map(x=>x.returns_sum||0);
+      const oq = tsRows.map(x=>x.orders_qty||0);
+      const rq = tsRows.map(x=>x.returns_qty||0);
+      const rate = tsRows.map(x=>(x.return_rate_sum||0)*100);
+
+      if (chartSum) chartSum.destroy();
+      if (chartQty) chartQty.destroy();
+
+      chartSum = new Chart($('chartSum').getContext('2d'), {
+        type:'line',
+        data:{ labels, datasets:[
+          { label:'Заказы ₽', data: os },
+          { label:'Возвраты ₽', data: rs },
+        ]},
+        options:{ responsive:true, interaction:{mode:'index',intersect:false}, plugins:{legend:{display:true}} }
+      });
+
+      chartQty = new Chart($('chartQty').getContext('2d'), {
+        type:'line',
+        data:{ labels, datasets:[
+          { label:'Заказы шт', data: oq, yAxisID:'y1' },
+          { label:'Возвраты шт', data: rq, yAxisID:'y1' },
+          { label:'Доля возвратов % (сумма)', data: rate, yAxisID:'y2' },
+        ]},
+        options:{
+          responsive:true,
+          interaction:{mode:'index',intersect:false},
+          scales:{
+            y1:{ position:'left' },
+            y2:{ position:'right', grid:{drawOnChartArea:false} }
+          }
+        }
+      });
+    }
+
+    async function loadSnapshots(){
+      const j = await apiGet('snapshots', {});
+      const sel = $('snapshotDate');
+      sel.innerHTML = '';
+      (j.snapshots||[]).forEach(s=>{
+        const o = document.createElement('option');
+        o.value = s.snapshot_date;
+        o.textContent = `${s.snapshot_date} (${s.status||'ok'})`;
+        sel.appendChild(o);
+      });
+      if (sel.options.length) sel.value = sel.options[0].value;
+      $('lastInfo').textContent = sel.options.length ? ('последний снапшот: ' + sel.value) : 'снапшотов ещё нет';
+    }
+
+    async function loadAll(){
+      const date_from = $('dateFrom').value;
+      const date_to = $('dateTo').value;
+      const snapshot_date = $('snapshotDate').value;
+
+      $('status').textContent = 'Загрузка...';
+
+      const k = await apiGet('kpi', {date_from, date_to, snapshot_date});
+      if (!k.ok) { $('status').textContent = 'Ошибка KPI'; return; }
+      renderKpis(k);
+
+      const ts = await apiGet('ts', {date_from, date_to, snapshot_date});
+      renderCharts(ts.rows||[]);
+
+      const st = await apiGet('stores', {date_from, date_to, snapshot_date});
+      renderStores(st.rows||[]);
+
+      const sku = await apiGet('sku', {date_from, date_to, snapshot_date, q: $('skuQ').value||''});
+      renderSku(sku.rows||[]);
+
+      $('status').textContent = 'OK';
+    }
+
+    async function refreshNow(){
+      const date_from = $('dateFrom').value;
+      const date_to = $('dateTo').value;
+      const stores = getSelectedStores();
+      if (!stores.length) { alert('Выберите магазин(ы)'); return; }
+
+      $('status').textContent = 'Обновляю и сохраняю снапшот... (может занять время)';
+      const j = await apiPost('refresh', {
+        date_from, date_to,
+        snapshot_date: todayISO(),
+        schemas: ['FBS','FBO'],
+        stores
+      });
+      if (!j.ok) { $('status').textContent = 'Ошибка refresh'; console.log(j); return; }
+
+      await loadSnapshots();
+      $('snapshotDate').value = j.snapshot_date;
+      await loadAll();
+    }
+
+    async function detOrders(){
+      const date_from = $('dateFrom').value;
+      const date_to = $('dateTo').value;
+      const snapshot_date = $('snapshotDate').value;
+      const q = $('qId').value || '';
+      const j = await apiGet('orders', {date_from, date_to, snapshot_date, q});
+      renderDetailsOrders(j.rows||[]);
+    }
+    async function detReturns(){
+      const date_from = $('dateFrom').value;
+      const date_to = $('dateTo').value;
+      const snapshot_date = $('snapshotDate').value;
+      const q = $('qId').value || '';
+      const j = await apiGet('returns', {date_from, date_to, snapshot_date, q});
+      renderDetailsReturns(j.rows||[]);
+    }
+
+    function initStores(){
+      const sel = $('stores');
+      const stores = window.OZON_STORES || [];
+      sel.innerHTML = '';
+      stores.forEach(s=>{
+        const id = String(s.client_id || s.clientId || '');
+        const nm = String(s.name || id);
+        const o = document.createElement('option');
+        o.value = id;
+        o.textContent = nm;
+        sel.appendChild(o);
+      });
+      // по умолчанию выделим первый
+      if (sel.options.length) sel.options[0].selected = true;
+    }
+
+    function initPresets(){
+      document.querySelectorAll('button[data-preset]').forEach(b=>{
+        b.addEventListener('click', ()=>{
+          const n = Number(b.getAttribute('data-preset')||7);
+          $('dateFrom').value = daysAgo(n);
+          $('dateTo').value = todayISO();
+        });
+      });
+    }
+
+    (async function main(){
+      $('dateFrom').value = daysAgo(7);
+      $('dateTo').value = todayISO();
+
+      initStores();
+      initPresets();
+
+      await loadSnapshots();
+
+      $('btnLoad').onclick = loadAll;
+      $('btnRefresh').onclick = refreshNow;
+      $('btnSku').onclick = loadAll;
+      $('btnOrders').onclick = detOrders;
+      $('btnReturns').onclick = detReturns;
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+  <title>Синхронизация цен и остатков</title>
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    .table-wrapper { overflow-x: auto; }
+    .pager { display:flex; gap:8px; align-items:center; justify-content:flex-end; margin-top:8px; }
+  </style>
+  <script src="stores.secrets.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="clusters_runtime.js"></script>
+  <script src="clusters_list.js"></script>
+  <script src="ozon_date_range.js"></script>
+  <script src="ozon_api_patch.js"></script>
+  <script src="ozon_server_cache.js"></script>
+  <script src="ozon_api.js"></script>
+
+<script src="/ozon_orders_accruals_patch.js?v=2026-02-05_065103"></script>
+<script src="/ozon_costprice_patch.js?v=2026-02-05_065103"></script>
+</head>
+<body>
+  <header>
+    <div class="title">Синхронизация цен и остатков</div>
+    <nav>
+      <a href="index.html">Цены</a>
+      <a href="actions.html">Акции</a>
+      <a href="orders.html">Заказы</a>
+      <a href="returns.html">Возвраты</a>
+      <a href="transactions.html">Начисления</a>
+      <a href="dashboard.html">Дашборд</a>
+      <a href="cluster_flow.html">Кластеры</a>
+      <a class="active" href="sync.html">Синхронизация</a>
+          <a href="stores.html">Магазины</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="panel">
+      <div class="row">
+        <label>Магазин
+          <select id="storeSelect"></select>
+        </label>
+        <label>Склад
+          <select id="warehouseSelect"></select>
+        </label>
+        <label>Автообновление
+          <select id="autoSelect">
+            <option value="off">Выключено</option>
+            <option value="on">3 раза в день</option>
+          </select>
+        </label>
+        <button id="loadPrice" type="button">Загрузить прайс и товары</button>
+        <label class="ghost-input">или выберите XLSX вручную
+          <input id="priceFile" type="file" accept=".xlsx,.xls" />
+        </label>
+        <button id="syncPrices" type="button" disabled>Обновить цены</button>
+        <button id="syncStocks" type="button" disabled>Обновить остатки</button>
+      </div>
+      <div class="status" id="status"></div>
+      <div class="progress" aria-label="Ход синхронизации"><span id="progressBar"></span></div>
+    </div>
+
+    <div class="panel">
+      <div class="row" style="align-items:flex-start;">
+        <div style="flex:1; min-width:280px;">
+          <div class="muted" style="margin-bottom:8px;">Динамическая наценка (цена закупки → %)</div>
+          <div id="markupTiers" class="grid"></div>
+        </div>
+        <div style="min-width:240px;">
+          <button id="resetMarkup" type="button" class="secondary">Сбросить наценку по умолчанию</button>
+          <p class="muted">Проценты применяются и к `price`, и к `min_price`, расчёт — как на странице цен: цена/мин. цена учитывают комиссию, эквайринг 1,9%, продвижение 1%, логистику, доставку и упаковку 40 ₽.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="overflow:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Артикул (offer_id)</th>
+            <th>Product ID</th>
+            <th>QTY</th>
+            <th>Склад</th>
+            <th>Себестоимость</th>
+            <th>Цена</th>
+            <th>Минимальная цена</th>
+            <th>old_price</th>
+            <th>Ставка НДС</th>
+            <th>Источник</th>
+          </tr>
+        </thead>
+        <tbody id="resultBody"></tbody>
+      </table>
+      <div class="pager">
+        <button type="button" id="pagePrev">◀</button>
+        <span id="pagerInfo">Страница 1 / 1</span>
+        <button type="button" id="pageNext">▶</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="muted" style="margin-bottom:6px;">Лог запросов</div>
+      <div class="log" id="log"></div>
+    </div>
+  </main>
+
+  <script>
+    const ACQUIRING_RATE = 0.019;
+    const PROMOTION_RATE = 0.01;
+    const PACKAGING_COST = 40;
+    const MAX_PRICE_CHUNK = 1000;
+    const MAX_STOCK_CHUNK = 100;
+    const PRICE_URLS = [
+      { clientId: '2893128', warehouse: '1020005000191845', url: 'https://mikado-parts.ru/api/Price/GetSellerPriceExcel?Seller=UYX&Key=5ECFED83-D629-485E-8964-6CF8AF484BC9&Qty=True' },
+      { clientId: '2792968', warehouse: '1020005000285600', url: 'https://mikado-parts.ru/api/Price/GetSellerPriceExcel?Seller=VRU&Key=5ECFED83-D629-485E-8964-6CF8AF484BC9&Qty=True' },
+      { clientId: '2792968', warehouse: '1020005000285498', url: 'https://mikado-parts.ru/api/Price/GetSellerPriceExcel?Seller=QMX&Key=5ECFED83-D629-485E-8964-6CF8AF484BC9&Qty=True' },
+      { clientId: '3078847', warehouse: '1020005000237852', url: 'https://mikado-parts.ru/api/Price/GetSellerPriceExcel?Seller=NWY&Key=5ECFED83-D629-485E-8964-6CF8AF484BC9&Qty=True' },
+      { clientId: '2893128', warehouse: '1020005000176328', url: 'https://mikado-parts.ru/api/Price/GetSellerPriceExcel?Seller=UYX&Key=51F82C10-C106-4717-9DCA-85E4DA48C46B&Qty=True' },
+      { clientId: '2792968', warehouse: '1020005000158685', url: 'https://mikado-parts.ru/api/Price/GetSellerPriceExcel?Seller=VRU&Key=51F82C10-C106-4717-9DCA-85E4DA48C46B&Qty=True' },
+      { clientId: '2792968', warehouse: '1020005000285489', url: 'https://mikado-parts.ru/api/Price/GetSellerPriceExcel?Seller=QMX&Key=51F82C10-C106-4717-9DCA-85E4DA48C46B&Qty=True' },
+      { clientId: '3078847', warehouse: '1020005000233916', url: 'https://mikado-parts.ru/api/Price/GetSellerPriceExcel?Seller=NWY&Key=51F82C10-C106-4717-9DCA-85E4DA48C46B&Qty=True' }
+    ];
+    const SPB_IDS = new Set(['1020005000233916','1020005000285489','1020005000158685','1020005000176328']);
+    const MOSCOW_IDS = new Set(['1020005000237852','1020005000285498','1020005000285600','1020005000191845']);
+
+    const storeSelect = document.getElementById('storeSelect');
+    const warehouseSelect = document.getElementById('warehouseSelect');
+    const statusEl = document.getElementById('status');
+    const logEl = document.getElementById('log');
+    const progressBar = document.getElementById('progressBar');
+    const loadPriceBtn = document.getElementById('loadPrice');
+    const priceFileInput = document.getElementById('priceFile');
+    const syncPricesBtn = document.getElementById('syncPrices');
+    const syncStocksBtn = document.getElementById('syncStocks');
+    const resultBody = document.getElementById('resultBody');
+    const markupContainer = document.getElementById('markupTiers');
+    const resetMarkupBtn = document.getElementById('resetMarkup');
+    const autoSelect = document.getElementById('autoSelect');
+
+    let stores = [];
+    let productsMap = new Map();
+    let priceInfoMap = new Map();
+    let rows = [];
+    let logEntries = [];
+    let autoTimer = null;
+    let currentPage = 1;
+    const PAGE_SIZE = 500;
+
+    const defaultTiers = [
+      { limit: 100, markup: 35 },
+      { limit: 300, markup: 30 },
+      { limit: 700, markup: 25 },
+      { limit: 1500, markup: 22 },
+      { limit: 3000, markup: 20 },
+      { limit: 6000, markup: 18 },
+      { limit: Infinity, markup: 15 }
+    ];
+
+    function loadTiers() {
+      const saved = localStorage.getItem('syncMarkupTiers');
+      if (!saved) return [...defaultTiers];
+      try {
+        const parsed = JSON.parse(saved);
+        return parsed.map((t) => ({ limit: Number(t.limit), markup: Number(t.markup) }));
+      } catch (e) {
+        return [...defaultTiers];
+      }
+    }
+
+    let tiers = loadTiers();
+
+    function saveTiers() {
+      localStorage.setItem('syncMarkupTiers', JSON.stringify(tiers));
+    }
+
+    function renderTiers() {
+      markupContainer.innerHTML = '';
+      tiers.forEach((tier, idx) => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'pill';
+        wrapper.innerHTML = `До <input type="number" min="1" value="${Number.isFinite(tier.limit) ? tier.limit : ''}" data-idx="${idx}" data-field="limit" style="width:90px;" ${tier.limit===Infinity?'placeholder="∞"':''}/> ₽ → <input type="number" step="0.1" value="${tier.markup}" data-idx="${idx}" data-field="markup" style="width:70px;"/> %`;
+        markupContainer.appendChild(wrapper);
+      });
+    }
+
+    markupContainer.addEventListener('input', (e) => {
+      const field = e.target.dataset.field;
+      const idx = Number(e.target.dataset.idx);
+      if (!field || Number.isNaN(idx)) return;
+      if (field === 'limit') {
+        const val = Number(e.target.value);
+        tiers[idx].limit = Number.isFinite(val) && val > 0 ? val : Infinity;
+      } else {
+        tiers[idx].markup = Number(e.target.value) || 0;
+      }
+      saveTiers();
+    });
+
+    resetMarkupBtn.addEventListener('click', () => {
+      tiers = [...defaultTiers];
+      saveTiers();
+      renderTiers();
+    });
+
+    function addLog(entry) {
+      logEntries.unshift({ time: new Date().toLocaleTimeString(), ...entry });
+      if (logEntries.length > 200) logEntries.pop();
+      renderLog();
+    }
+
+    function renderLog() {
+      if (!logEntries.length) {
+        logEl.textContent = 'Лог появится после первого запроса';
+        return;
+      }
+      logEl.textContent = logEntries
+        .map((l) => `[${l.time}] ${l.method || ''} ${l.path || ''}${l.status ? ' • ' + l.status : ''}${l.error ? '\nОшибка: ' + l.error : ''}${l.body ? '\nЗапрос: ' + l.body : ''}${l.response ? '\nОтвет: ' + l.response : ''}`)
+        .join('\n\n');
+    }
+
+    function setStatus(parts = []) {
+      statusEl.innerHTML = parts.map((p) => `<span class="tag ${p.type || ''}">${p.text}</span>`).join(' ');
+    }
+
+    function setProgress(percent) {
+      progressBar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+    }
+
+    async function loadStores() {
+      try {
+        const resp = await fetch('stores_config.json');
+        if (!resp.ok) throw new Error('stores_config.json не найден');
+        const data = await resp.json();
+        stores = Array.isArray(data) ? data : Array.isArray(data?.stores) ? data.stores : [];
+      } catch (e) {
+        stores = [];
+      }
+      if (!stores.length) {
+        const sample = window.OZON_STORES_SAMPLE || [];
+        stores = Array.isArray(sample) ? sample : [];
+      }
+      if (!stores.length) {
+        stores = [{ name: 'Демо магазин', client_id: 'demo', api_key: 'demo', warehouse: [{ name: 'Демо склад', warehouse_id: 'demo' }] }];
+      }
+      storeSelect.innerHTML = stores.map((s, i) => `<option value="${i}">${s.name}</option>`).join('');
+      updateWarehouses();
+    }
+
+    function updateWarehouses() {
+      const store = stores[storeSelect.value] || stores[0];
+      const warehouses = store?.warehouse || [];
+      warehouseSelect.innerHTML = warehouses.map((w) => `<option value="${w.warehouse_id}">${w.name}</option>`).join('');
+    }
+
+    function chooseMarkup(netPrice) {
+      const numeric = Number(netPrice) || 0;
+      for (const tier of tiers) {
+        if (numeric <= tier.limit) return tier.markup;
+      }
+      return tiers[tiers.length - 1]?.markup || 0;
+    }
+
+    function sanitizeOffer(code) {
+      return String(code || '').replace(/-/g, '').trim().toUpperCase();
+    }
+
+    function supplierWarehouseName(id) {
+      if (SPB_IDS.has(String(id))) return 'СПб';
+      if (MOSCOW_IDS.has(String(id))) return 'Москва';
+      return 'Склад';
+    }
+
+    async function fetchProductList(store) {
+      const list = [];
+      let lastId = '';
+      let guard = 0;
+      const limit = 1000;
+      while (guard < 300) {
+        guard++;
+        const body = { filter: { visibility: 'ALL' }, last_id: lastId, limit };
+        const res = await ozonFetch('/v3/product/list', store, body);
+        const items = res?.result?.items || [];
+        list.push(...items);
+        lastId = res?.result?.last_id || '';
+        if (!lastId || !items.length) break;
+      }
+      productsMap = new Map(list.map((p) => [sanitizeOffer(p.offer_id), p.product_id]));
+    }
+
+    async function fetchPrices(store, offerIds) {
+      priceInfoMap = new Map();
+      const chunks = [];
+      for (let i = 0; i < offerIds.length; i += MAX_PRICE_CHUNK) {
+        chunks.push(offerIds.slice(i, i + MAX_PRICE_CHUNK));
+      }
+      let done = 0;
+      for (const chunk of chunks) {
+        const body = { cursor: '', filter: { offer_id: chunk, visibility: 'ALL' }, limit: MAX_PRICE_CHUNK };
+        const res = await ozonFetch('/v5/product/info/prices', store, body);
+        (res?.items || []).forEach((item) => priceInfoMap.set(sanitizeOffer(item.offer_id), item));
+        done += chunk.length;
+        setProgress((done / offerIds.length) * 50);
+      }
+    }
+
+    const CORS_PROXY = 'https://cors.isomorphic-git.org/';
+    const CORS_PROXY_ALT = 'https://api.allorigins.win/raw?url=';
+
+    let manualPriceBuffer = null;
+
+    async function fetchExcel(url, fallbackPath) {
+      const attempt = async (target, label, opts = {}) => {
+        addLog({ method: 'GET', path: target, note: label });
+        const resp = await fetch(target, { mode: opts.mode || 'cors', cache: 'no-store' });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return resp.arrayBuffer();
+      };
+
+      const tries = [];
+      if (fallbackPath) tries.push(() => attempt(fallbackPath, 'локальный кеш', { mode: 'same-origin' }));
+      tries.push(() => attempt(url, 'основной'));
+      tries.push(() => attempt(`${CORS_PROXY}${encodeURIComponent(url)}`, 'прокси'));
+      tries.push(() => attempt(`${CORS_PROXY_ALT}${encodeURIComponent(url)}`, 'alt-прокси'));
+
+      let lastErr = null;
+      for (const run of tries) {
+        try {
+          return await run();
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      throw new Error(`Не удалось скачать прайс: ${lastErr?.message || 'нет ответа'}`);
+    }
+
+    async function loadSupplierPrice(store, warehouseId) {
+      let buf = manualPriceBuffer;
+      if (!buf) {
+        const url = PRICE_URLS.find((u) => u.clientId === store.client_id && u.warehouse === warehouseId)?.url;
+        if (!url) throw new Error('Не найдена ссылка для выбранного магазина и склада');
+        const localName = `/prices/${store.client_id}_${warehouseId}.xlsx`;
+        try {
+          buf = await fetchExcel(url, localName);
+        } catch (e) {
+          setStatus([{ text: `${e.message}. Загрузите XLSX вручную.`, type: 'error' }]);
+          priceFileInput.click();
+          throw e;
+        }
+      }
+      const wb = XLSX.read(buf, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      return json.map((row) => ({
+        offerId: sanitizeOffer(row.Code),
+        netPrice: Number(row.PriceOut) || 0,
+        qty: Number(row.QTY) || 0,
+        source: row.StockName || '',
+        targetWarehouse: supplierWarehouseName(warehouseId)
+      })).filter((r) => r.offerId);
+    }
+
+    function computePriceRow(entry, store) {
+      const offerId = entry.offerId;
+      const info = priceInfoMap.get(offerId);
+      if (!info) return null;
+      const commissionPercent = info?.commissions?.sales_percent_fbs ?? 0;
+      const firstMile = info?.commissions?.fbs_first_mile_max_amount ?? 0;
+      const logistics = info?.commissions?.fbs_direct_flow_trans_max_amount ?? 0;
+      const delivery = info?.commissions?.fbs_deliv_to_customer_amount ?? 0;
+      const vat = store.vat || info?.price?.vat || '0';
+      const markup = chooseMarkup(entry.netPrice);
+
+      const commissionRate = commissionPercent / 100;
+      const denominator = 1 - commissionRate - ACQUIRING_RATE - PROMOTION_RATE;
+      if (denominator <= 0) return null;
+
+      const restCosts = firstMile + logistics + delivery + PACKAGING_COST;
+      const numerator = entry.netPrice * (1 + markup / 100) + restCosts;
+      const price = Math.max(0, Math.round((numerator / denominator) * 100) / 100);
+      const minPrice = price; // используем тот же расчёт для min_price
+      const oldPrice = Math.round((price / 60) * 10000) / 100;
+
+      return {
+        offerId,
+        productId: productsMap.get(offerId),
+        qty: entry.qty,
+        warehouseLabel: entry.targetWarehouse,
+        netPrice: entry.netPrice,
+        price,
+        minPrice,
+        oldPrice,
+        vat,
+        source: entry.source || 'Прайс поставщика'
+      };
+    }
+
+    function renderRows() {
+      const start = (currentPage - 1) * PAGE_SIZE;
+      const slice = rows.slice(start, start + PAGE_SIZE);
+      resultBody.innerHTML = slice.map((r) => `
+        <tr>
+          <td>${r.offerId}</td>
+          <td>${r.productId ?? ''}</td>
+          <td>${r.qty}</td>
+          <td>${r.warehouseLabel}</td>
+          <td>${r.netPrice.toFixed(2)}</td>
+          <td>${r.price.toFixed(2)}</td>
+          <td>${r.minPrice.toFixed(2)}</td>
+          <td>${r.oldPrice.toFixed(2)}</td>
+          <td>${r.vat}</td>
+          <td>${r.source}</td>
+        </tr>`).join('');
+      const pager = document.getElementById('pagerInfo');
+      if (pager) pager.textContent = `Страница ${currentPage} / ${Math.max(1, Math.ceil(rows.length / PAGE_SIZE))}`;
+    }
+
+    async function handleLoad() {
+      const store = stores[storeSelect.value];
+      const warehouseId = warehouseSelect.value;
+      setStatus([{ text: 'Готовим данные...', type: 'loading' }]);
+      setProgress(5);
+      try {
+        await fetchProductList(store);
+        setProgress(15);
+        const supplierRows = await loadSupplierPrice(store, warehouseId);
+        const matched = supplierRows.filter((r) => productsMap.has(r.offerId));
+        if (!matched.length) throw new Error('В прайсе нет артикулов, совпадающих с OZON');
+        await fetchPrices(store, matched.map((m) => m.offerId));
+        rows = matched
+          .map((m) => computePriceRow(m, store))
+          .filter(Boolean);
+        renderRows();
+        syncPricesBtn.disabled = false;
+        syncStocksBtn.disabled = false;
+        setStatus([{ text: `Загружено строк: ${rows.length}`, type: 'ok' }]);
+        setProgress(100);
+      } catch (e) {
+        setStatus([{ text: e.message || 'Ошибка загрузки', type: 'error' }]);
+        addLog({ method: 'ERR', path: 'load', error: e.message });
+        syncPricesBtn.disabled = true;
+        syncStocksBtn.disabled = true;
+        setProgress(0);
+      }
+    }
+
+    document.getElementById('pagePrev').addEventListener('click', () => {
+      if (currentPage > 1) { currentPage -= 1; renderRows(); }
+    });
+    document.getElementById('pageNext').addEventListener('click', () => {
+      const maxPage = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+      if (currentPage < maxPage) { currentPage += 1; renderRows(); }
+    });
+
+    priceFileInput.addEventListener('change', async (evt) => {
+      const file = evt.target.files?.[0];
+      if (!file) return;
+      try {
+        manualPriceBuffer = await file.arrayBuffer();
+        addLog({ method: 'FILE', path: file.name, detail: `Размер: ${file.size} байт` });
+        setStatus([{ text: 'Прайс выбран вручную, можно загружать', type: 'ok' }]);
+      } catch (e) {
+        manualPriceBuffer = null;
+        setStatus([{ text: e.message || 'Не удалось прочитать файл', type: 'error' }]);
+      }
+    });
+
+    function chunk(array, size) {
+      const res = [];
+      for (let i = 0; i < array.length; i += size) res.push(array.slice(i, i + size));
+      return res;
+    }
+
+    async function ozonFetch(path, store, body) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      try {
+        const res = await fetch(`https://api-seller.ozon.ru${path}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Client-Id': store.client_id,
+            'Api-Key': store.api_key
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+        const json = await res.json();
+        addLog({ method: 'POST', path, status: res.status, body: JSON.stringify(body), response: JSON.stringify(json).slice(0, 800) });
+        return json;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    async function syncPrices() {
+      const store = stores[storeSelect.value];
+      const payloads = chunk(rows, MAX_PRICE_CHUNK).map((block) => ({
+        prices: block.map((r) => ({
+          auto_action_enabled: 'UNKNOWN',
+          auto_add_to_ozon_actions_list_enabled: 'UNKNOWN',
+          currency_code: 'RUB',
+          offer_id: r.offerId,
+          price: r.price.toString(),
+          min_price: r.minPrice.toString(),
+          old_price: r.oldPrice.toString(),
+          net_price: r.netPrice.toString(),
+          vat: String(r.vat || store.vat || '0')
+        }))
+      }));
+      setStatus([{ text: 'Отправляем цены...', type: 'loading' }]);
+      let sent = 0;
+      for (const body of payloads) {
+        await ozonFetch('/v1/product/import/prices', store, body);
+        sent += body.prices.length;
+        setProgress((sent / rows.length) * 100);
+      }
+      setStatus([{ text: `Цены обновлены: ${rows.length}`, type: 'ok' }]);
+    }
+
+    async function syncStocks() {
+      const store = stores[storeSelect.value];
+      const warehouseId = warehouseSelect.value;
+      const payloads = chunk(rows, MAX_STOCK_CHUNK).map((block) => ({
+        stocks: block
+          .filter((r) => r.productId)
+          .map((r) => ({ product_id: Number(r.productId), offer_id: r.offerId, stock: Math.max(0, Math.floor(r.qty)), warehouse_id: Number(warehouseId) }))
+      }));
+      setStatus([{ text: 'Отправляем остатки...', type: 'loading' }]);
+      let sent = 0;
+      for (const body of payloads) {
+        await ozonFetch('/v2/products/stocks', store, body);
+        sent += body.stocks.length;
+        setProgress((sent / rows.length) * 100);
+      }
+      setStatus([{ text: `Остатки обновлены: ${sent}`, type: 'ok' }]);
+    }
+
+    function startAuto() {
+      if (autoTimer) clearInterval(autoTimer);
+      if (autoSelect.value !== 'on') return;
+      autoTimer = setInterval(() => {
+        handleLoad().then(() => Promise.all([syncPrices(), syncStocks()])).catch((e) => addLog({ method: 'AUTO', path: 'sync', error: e.message }));
+      }, 8 * 60 * 60 * 1000);
+    }
+
+    loadPriceBtn.addEventListener('click', handleLoad);
+    syncPricesBtn.addEventListener('click', syncPrices);
+    syncStocksBtn.addEventListener('click', syncStocks);
+    storeSelect.addEventListener('change', updateWarehouses);
+    autoSelect.addEventListener('change', startAuto);
+
+    renderTiers();
+    loadStores();
+    setStatus([{ text: 'Ожидание загрузки данных', type: 'muted' }]);
+  </script>
+<script src="stores_runtime.js"></script>
+<script src="nav.js"></script>
+<script src="stores.secrets.js"></script>
+<script src="ozon_storage.js"></script>
+<script src="nav.js"></script>
+<script src="table_sort.js"></script>
+<script src="ozon_prices_detach_patch.js"></script>
+</body>
+</html>

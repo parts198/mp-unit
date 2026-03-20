@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Возвраты OZON</title>
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    .table-wrapper { overflow-x: auto; }
+    .controls { gap: 10px; padding: 0 20px 12px; }
+    .return-details-row { display: none; background: rgba(47, 129, 247, 0.06); }
+    .return-details-row.open { display: table-row; }
+    .mini-table th, .mini-table td { padding: 6px 8px; }
+    .filters { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  </style>
+  <script src="clusters_runtime.js"></script>
+  <script src="clusters_list.js"></script>
+  <script src="ozon_date_range.js"></script>
+  <script src="ozon_api_patch.js"></script>
+  <script src="ozon_server_cache.js"></script>
+  <script src="ozon_api.js"></script>
+
+<script src="/ozon_orders_accruals_patch.js?v=2026-02-05_065103"></script>
+<script src="/ozon_costprice_patch.js?v=2026-02-05_065103"></script>
+</head>
+<body>
+  <header>
+    <div class="title">Возвраты OZON</div>
+    <nav class="nav"></nav>
+  </header>
+
+  <div class="controls">
+    <select id="storeSelect" aria-label="Магазин"></select>
+    <input type="date" id="dateFrom" class="date-input" />
+    <input type="date" id="dateTo" class="date-input" />
+    <input id="offerFilter" class="filter-input" type="search" placeholder="Фильтр по offer_id" />
+    <select id="directionFilter" aria-label="Куда поехал товар">
+      <option value="ALL">Все направления</option>
+      <option value="TO_SELLER">К нам (селлеру)</option>
+      <option value="TO_OZON">На склад OZON</option>
+    </select>
+    
+    <label style="display:inline-flex;align-items:center;gap:6px;">
+      <input type="checkbox" id="includeRfbs" checked />
+      rFBS (заявки на возврат)
+    </label>
+<button id="loadBtn" type="button">Загрузить возвраты</button>
+  </div>
+
+  <main class="main">
+    <section class="card">
+      <div class="status-row">
+        <div id="statusText" class="status-text">Выберите период и нажмите «Загрузить возвраты».</div>
+        <div id="returnsSummary" class="pill"></div>
+      </div>
+      <div id="returnsTableWrapper" class="table-wrapper"></div>
+    </section>
+
+    <section class="card">
+      <h2>Лог запросов</h2>
+      <div id="logBox" class="log"></div>
+    </section>
+  </main>
+
+    <script src="stores.secrets.js?v=3"></script>
+  <script src="scripts/ozon-core.js?v=19"></script>
+  <script>
+    
+  // --- helpers: stores & return schema/status ---
+  function getStoresSafe() {
+    const x = window.OZON_STORES;
+    if (Array.isArray(x)) return x;
+    if (x && Array.isArray(x.stores)) return x.stores;
+    return [];
+  }
+
+  function fillStoreSelect(selectEl, stores) {
+    if (!selectEl) return;
+    selectEl.innerHTML = '';
+    stores.forEach((st, idx) => {
+      const opt = document.createElement('option');
+      opt.value = String(idx);
+      opt.textContent = st.name || (`Store ${st.client_id || idx}`);
+      selectEl.appendChild(opt);
+    });
+  }
+
+  function pickScalar(v) {
+    if (v == null) return '';
+    if (typeof v === 'string' || typeof v === 'number') return String(v);
+    if (typeof v === 'object') return v.type || v.value || v.name || v.title || JSON.stringify(v);
+    return String(v);
+  }
+
+  // Определяем схему FBS/FBO по типовым полям ответа /v1/returns/list
+  function schemeOfReturn(r) {
+    const candidates = [
+      r.schema, r.posting_schema, r.postingSchema,
+      r.delivery_schema, r.deliverySchema,
+      r.logistic_type, r.logisticType,
+      r.delivery_type, r.deliveryType,
+      r.fulfillment_type, r.fulfillmentType,
+      r.warehouse_type, r.warehouseType,
+      r.is_fbo, r.isFbo, r.fbo, r.fbs
+    ];
+
+    for (const c of candidates) {
+      if (c === true) return 'FBO';
+      if (c === false) continue;
+      const x = pickScalar(c).toUpperCase();
+      if (!x) continue;
+      if (x.includes('FBO')) return 'FBO';
+      if (x.includes('FBS')) return 'FBS';
+      if (x.includes('SELLER')) return 'FBS';
+      if (x.includes('OZON')) return 'FBO';
+    }
+
+    // эвристика: наличие warehouse_id часто указывает на FBO, но не всегда
+    if (r.warehouse_id || r.warehouseId) return 'FBO';
+    return '';
+  }
+
+  // --- end helpers ---
+const logBox = document.getElementById('logBox');
+    const statusText = document.getElementById('statusText');
+    const returnsSummary = document.getElementById('returnsSummary');
+    const returnsTableWrapper = document.getElementById('returnsTableWrapper');
+    const storeSelect = document.getElementById('storeSelect');
+    const dateFrom = document.getElementById('dateFrom');
+    const dateTo = document.getElementById('dateTo');
+    const offerFilter = document.getElementById('offerFilter');
+    const directionFilter = document.getElementById('directionFilter');
+    const includeRfbs = document.getElementById('includeRfbs');
+    const loadBtn = document.getElementById('loadBtn');
+
+    let stores = [];
+
+    function log(message, data) {
+      const entry = document.createElement('div');
+      entry.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${message}`;
+      if (data) {
+        const details = document.createElement('details');
+        details.innerHTML = `<summary>Детали</summary><pre>${JSON.stringify(data, null, 2)}</pre>`;
+        entry.appendChild(details);
+      }
+      logBox.prepend(entry);
+    }
+
+    function setDefaultDates() {
+      const to = new Date();
+      const from = new Date(Date.now() - 27 * 24 * 60 * 60 * 1000);
+      dateFrom.value = from.toISOString().slice(0, 10);
+      dateTo.value = to.toISOString().slice(0, 10);
+    }
+
+    function populateStores() {
+      storeSelect.innerHTML = '';
+      const optAll = document.createElement('option');
+      optAll.value = 'all';
+      optAll.textContent = 'Все магазины';
+      storeSelect.appendChild(optAll);
+
+      stores.forEach((s, idx) => {
+        const opt = document.createElement('option');
+        opt.value = String(idx);
+        opt.textContent = s.name || `Store ${s.client_id}`;
+        storeSelect.appendChild(opt);
+      });
+      storeSelect.value = 'all';
+    }
+
+    async function apiCall(store, path, body) {
+      // OzonCore.postJson обычно сам ставит Content-Type, но явно зададим на случай обновлений.
+      return await window.OzonCore.postJson('https://api-seller.ozon.ru' + path, body, {
+        'Client-Id': String(store.client_id),
+        'Api-Key': store.api_key,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      });
+    }
+
+    function isoFrom(day) { return day + 'T00:00:00Z'; }
+    function isoTo(day) { return day + 'T23:59:59Z'; }
+
+    async function fetchReturnsPaged(store, path, schema, fromIso, toIso, buildFilter) {
+      const limit = 500;
+
+      // На первый запрос last_id не отправляем (по документации), поэтому начинаем с null.
+      // Важно: last_id может быть 0, поэтому нельзя проверять через if(last_id) и нельзя доставать через ||.
+      let last_id = null;
+
+      const out = [];
+      for (let guard = 0; guard < 500; guard++) {
+        const body = {
+          filter: buildFilter(fromIso, toIso),
+          limit,
+        };
+        if (last_id !== null) body.last_id = last_id;
+
+        const data = await apiCall(store, path, body);
+        const res = data?.result ?? data;
+
+        const items = Array.isArray(res?.returns) ? res.returns
+                    : Array.isArray(res?.items) ? res.items
+                    : Array.isArray(res) ? res
+                    : [];
+
+        items.forEach((r) => out.push({ ...r, _schema: schema, _store: store.name || store.client_id }));
+
+        const next = (res?.last_id ?? res?.next_last_id ?? null);
+        const has_next = (res?.has_next ?? res?.hasNext ?? null);
+
+        // Если API явно говорит, что страниц больше нет — выходим.
+        if (has_next === false) break;
+
+        // Если страницность неявная — ориентируемся на limit и изменение last_id.
+        const shouldContinue =
+          (has_next === true) ||
+          (next !== null && String(next) !== String(last_id) && items.length === limit);
+
+        if (!shouldContinue) break;
+        if (next === null) break;
+
+        last_id = next;
+        if (items.length < limit) break;
+      }
+      return out;
+    }
+
+      function bestOfferId(obj) {
+        if (!obj) return '';
+        const cands = [
+          obj.seller_sku, obj.sellerSku, obj.sku, obj.offer_id, obj.offerId, obj.offerID
+        ]
+        .map(v => (v == null ? '' : String(v)).trim())
+        .filter(Boolean);
+
+        if (!cands.length) return '';
+        // Берём самый "богатый" (обычно со всеми ведущими нулями) — как правило это самый длинный
+        cands.sort((a, b) => b.length - a.length);
+        return cands[0];
+      }
+
+
+
+    
+      
+      
+      function normalizeReturnItems(r) {
+        // Новый формат /v1/returns/list: r.product
+        if (r && r.product) {
+          const p = r.product;
+          const offer_id = bestOfferId(p);
+          const name = p.name || '';
+          const quantity = Number(p.quantity || 0) || 0;
+          const price = p.price?.price ?? p.price ?? null;
+          const commission = p.commission?.price ?? null;
+          return [{ offer_id, name, quantity, price, commission, raw: p }];
+        }
+
+        // Старые форматы (на всякий случай)
+        const items = r.items || r.products || r.return_items || [];
+        if (Array.isArray(items)) {
+          return items.map((it) => {
+            const offer_id = bestOfferId(it);
+            const name = it.name || it.product_name || it.title || '';
+            const quantity = Number(it.quantity || it.qty || 0) || 0;
+            const price = it.price?.price ?? it.price ?? null;
+            return { offer_id, name, quantity, price, raw: it };
+          }).filter(Boolean);
+        }
+
+        return [];
+      }
+
+
+      function statusLabel(x) {
+        if (x == null) return '';
+        if (typeof x === 'string') return x;
+        if (typeof x === 'number') return String(x);
+        return x.status || x.state || x.name || x.title || JSON.stringify(x);
+      }
+
+
+function directionOf(r) {
+      const raw = String(r.return_to ?? r.destination ?? r.receiver_type ?? r.return_method ?? '').toLowerCase();
+      if (raw.includes('seller') || raw.includes('sel') || raw.includes('to_seller')) return 'TO_SELLER';
+      if (raw.includes('ozon') || raw.includes('fbo') || raw.includes('warehouse') || raw.includes('to_ozon')) return 'TO_OZON';
+      // unknown: keep empty
+      return 'UNKNOWN';
+    }
+
+    async function fetchReturnsForStore(store, fromDay, toDay) {
+      const chunks = window.OzonCore.splitDateRange(fromDay, toDay, 7);
+      const all = [];
+
+      for (const ch of chunks) {
+        log(`${store.name}: период ${ch.from}…${ch.to}`);
+        const fromIso = isoFrom(ch.from);
+        const toIso = isoTo(ch.to);
+
+        // Возвраты FBO/FBS: /v1/returns/list
+        try {
+          const v1 = await fetchReturnsPaged(
+            store,
+            '/v1/returns/list',
+            'RETURNS',
+            fromIso,
+            toIso,
+            (f, t) => ({ logistic_return_date: { time_from: f, time_to: t } })
+          );
+          all.push(...v1);
+        } catch (e) {
+          log(`${store.name}: /v1/returns/list не удалось`, { message: e?.message || String(e) });
+        }
+
+        // Заявки на возврат rFBS: /v2/returns/rfbs/list
+        if (includeRfbs && includeRfbs.checked) {
+          try {
+            const rfbs = await fetchReturnsPaged(
+              store,
+              '/v2/returns/rfbs/list',
+              'RFBS',
+              fromIso,
+              toIso,
+              (f, t) => ({
+                created_at: { from: f, to: t },
+                group_state: ['ALL'],
+              })
+            );
+            all.push(...rfbs);
+          } catch (e) {
+            log(`${store.name}: /v2/returns/rfbs/list не удалось`, { message: e?.message || String(e) });
+          }
+        }
+      }
+
+      // дедупликация
+      const map = new Map();
+      all.forEach((r) => {
+        const key =
+          r.return_id ?? r.id ?? r.returnId ?? r.rfbs_return_id ?? r.request_id ??
+          JSON.stringify([r._store, r._schema, r.created_at || r.createdAt, r.posting_number || r.postingNumber]);
+        map.set(String(key), r);
+      });
+      return Array.from(map.values());
+    }
+      function normOfferId(x) {
+        return String(x ?? '')
+          .trim()
+          .toUpperCase()
+          .replace(/[^0-9A-Z]+/g, ''); // убираем дефисы/пробелы и т.п.
+      }
+
+
+
+    function applyFilters(rows) {
+      const q = String(offerFilter.value || '').trim();
+      const qn = normOfferId(q);
+const dir = directionFilter.value;
+
+      return rows
+        .map((r) => {
+          const items = normalizeReturnItems(r);
+          const filteredItems = qn ? items.filter((it) => normOfferId(it.offer_id) === qn) : items;
+          if (q && !filteredItems.length) return null;
+          const d = directionOf(r);
+          if (dir !== 'ALL' && d !== dir && d !== 'UNKNOWN') return null;
+          return { ...r, _filteredItems: filteredItems, _dir: d };
+        })
+        .filter(Boolean);
+    }
+
+    function renderSummary(rows) {
+      const returnsCount = rows.length;
+      const units = rows.reduce((sum, r) => sum + (r._filteredItems || normalizeReturnItems(r)).reduce((s, it) => s + (it.quantity || 0), 0), 0);
+      returnsSummary.textContent = `Возвратов: ${returnsCount} • Штук: ${units}`;
+    }
+
+    function render(rows) {
+      returnsTableWrapper.innerHTML = '';
+      if (!rows.length) {
+        returnsTableWrapper.innerHTML = '<div class="empty">Ничего не найдено.</div>';
+        return;
+      }
+
+      const table = document.createElement('table');
+      
+        table.innerHTML = `
+          <thead>
+            <tr>
+              <th></th>
+              <th>Магазин</th>
+              <th>Тип</th>
+              <th>Схема</th>
+              <th>№ возврата</th>
+              <th>№ отправления</th>
+              <th>Дата возврата</th>
+              <th>Статус</th>
+              <th>Артикул</th>
+              <th>Товар</th>
+              <th>Цена</th>
+              <th>Причина</th>
+              <th>Адрес размещения</th>
+              <th>Адрес назначения</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        `;
+        const tbody = table.querySelector('tbody');
+
+
+      rows
+        .sort((a,b) => String(b.logistic?.return_date || b.created_at || b.createdAt || '').localeCompare(String(a.logistic?.return_date || a.created_at || a.createdAt || '')))
+        .forEach((r) => {
+          const key = String(r.return_id || r.id || r.returnId || Math.random().toString(36).slice(2));
+          const items = r._filteredItems || normalizeReturnItems(r);
+          const qty = items.reduce((s,it)=>s+(it.quantity||0),0);
+
+          const tr = document.createElement('tr');
+          
+            const prod = r.product || {};
+            const offerId = bestOfferId(prod);
+            const prodName = prod.name || '';
+            const prodQty = Number(prod.quantity || 0) || 0;
+            const price = prod.price?.price ?? prod.price ?? null;
+
+            const place = r.place ? `${r.place.name || ''} ${r.place.address || ''}`.trim() : '';
+            const target = r.target_place ? `${r.target_place.name || ''} ${r.target_place.address || ''}`.trim() : '';
+            const status = r.visual?.status?.display_name || r.visual?.status?.sys_name || (r.status || '');
+            const retDate = (r.logistic?.return_date || r.created_at || r.createdAt || '').slice(0,19).replace('T',' ');
+
+            tr.innerHTML = `
+              <td><button type="button" class="btn-secondary btn-small" data-toggle="${key}">Показать</button></td>
+              <td>${r._store || ''}</td>
+              <td>${r.type || r._schema || ''}</td>
+              <td>${String(r.schema || schemeOfReturn(r) || r._schema || '').toUpperCase()}</td>
+              <td>${r.return_id || r.id || ''}</td>
+              <td>${r.posting_number || ''}</td>
+              <td>${retDate}</td>
+              <td>${status}</td>
+              <td>${offerId}</td>
+              <td>${prodName} ${prodQty ? ('×'+prodQty) : ''}</td>
+              <td>${(price != null) ? (Number(price).toLocaleString('ru-RU') + ' ₽') : '—'}</td>
+              <td>${r.return_reason_name || ''}</td>
+              <td>${place}</td>
+              <td>${target}</td>
+            `;
+            tbody.appendChild(tr);
+
+
+          const detail = document.createElement('tr');
+          detail.className = 'return-details-row';
+          detail.setAttribute('data-detail-for', key);
+          detail.innerHTML = `
+            <td colspan="14">
+              <div class="table-wrap">
+<table class="mini-table">
+                <thead><tr><th>offer_id</th><th>Название</th><th>Кол-во</th></tr></thead>
+                <tbody>
+                  ${items.map((it) => `<tr><td>${it.offer_id || '—'}</td><td>${it.name || '—'}</td><td>${it.quantity ?? 0}</td></tr>`).join('')}
+                </tbody>
+              </table>
+</div>
+            </td>
+          `;
+          tbody.appendChild(detail);
+        });
+
+      returnsTableWrapper.appendChild(table);
+    }
+
+    returnsTableWrapper.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-toggle]');
+      if (!btn) return;
+      const key = btn.getAttribute('data-toggle');
+      const row = returnsTableWrapper.querySelector(`.return-details-row[data-detail-for="${key}"]`);
+      if (!row) return;
+      const isOpen = row.classList.toggle('open');
+      btn.textContent = isOpen ? 'Скрыть' : 'Показать';
+    });
+
+    async function loadAll() {
+      if (!stores.length) {
+        statusText.textContent = 'Добавьте магазины на странице «Магазины».';
+        return;
+      }
+      const fromDay = dateFrom.value;
+      const toDay = dateTo.value;
+      if (!fromDay || !toDay) {
+        statusText.textContent = 'Укажите период.';
+        return;
+      }
+
+      loadBtn.disabled = true;
+      statusText.textContent = 'Загрузка…';
+      returnsSummary.textContent = '';
+      returnsTableWrapper.innerHTML = '';
+      logBox.innerHTML = '';
+
+      try {
+        const sel = storeSelect.value;
+        const selectedStores = (sel === 'all') ? stores : [stores[Number(sel)]].filter(Boolean);
+
+        let rows = [];
+        for (const s of selectedStores) {
+          const ret = await fetchReturnsForStore(s, fromDay, toDay);
+          rows = rows.concat(ret);
+        }
+
+        rows = applyFilters(rows);
+        renderSummary(rows);
+        render(rows);
+        statusText.textContent = `Готово: ${rows.length} возвратов`;
+      } catch (e) {
+        console.error(e);
+        statusText.textContent = 'Ошибка загрузки. Подробности в логе.';
+        log('Ошибка', { message: e.message || String(e) });
+      } finally {
+        loadBtn.disabled = false;
+      }
+    }
+
+    loadBtn.addEventListener('click', loadAll);
+
+    (async function init() {
+      setDefaultDates();
+        // stores init (forced)
+        stores = getStoresSafe();
+fillStoreSelect(storeSelect, stores);
+        loadBtn.disabled = !stores.length;
+        storeSelect.disabled = !stores.length;
+
+      try { stores = await window.OzonCore.loadStoresAsync(); } catch (e) { stores = []; }
+      populateStores();
+    })();
+  </script>
+<script src="stores_runtime.js"></script>
+<script src="nav.js"></script>
+<script src="stores.secrets.js"></script>
+<script src="ozon_storage.js"></script>
+<script src="nav.js"></script>
+<script src="table_sort.js"></script>
+<script src="ozon_prices_detach_patch.js"></script>
+</body>
+</html>

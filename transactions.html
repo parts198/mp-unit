@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+  <title>Начисления OZON</title>
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    .table-wrapper { overflow-x: auto; }
+    .details { display: none; }
+    .details.open { display: table-row; }
+  </style>
+  <script src="clusters_runtime.js"></script>
+  <script src="clusters_list.js"></script>
+  <script src="ozon_date_range.js"></script>
+  <script src="ozon_api_patch.js"></script>
+  <script src="ozon_server_cache.js"></script>
+  <script src="ozon_api.js"></script>
+
+<script src="/ozon_orders_accruals_patch.js?v=2026-02-05_065103"></script>
+<script src="/ozon_costprice_patch.js?v=2026-02-05_065103"></script>
+</head>
+<body>
+  <header>
+    <div class="title">Начисления OZON</div>
+    <nav class="nav"></nav>
+  </header>
+  <div class="controls" style="padding:0 20px 12px;">
+    <select id="storeSelect"></select>
+    <input type="date" id="dateFrom" class="date-input" />
+    <input type="date" id="dateTo" class="date-input" />
+    <input type="search" id="postingFilter" placeholder="Поиск по отправлению" />
+    <button id="loadBtn">Загрузить начисления</button>
+  </div>
+  <main>
+    <section class="card">
+      <h2>Статус</h2>
+      <div class="badge" id="statusText">Выберите магазин и нажмите «Загрузить начисления»</div>
+    </section>
+    <section class="card">
+      <h2>Начисления</h2>
+      <div id="txSummary" class="badge"></div>
+      <div id="txTableWrapper"></div>
+    </section>
+    <section class="card">
+      <h2>Лог запросов к OZON</h2>
+      <div class="log" id="logBox"></div>
+    </section>
+  </main>
+    <script src="stores.secrets.js?v=2"></script>
+  <script src="scripts/ozon-core.js?v=19"></script>
+  <script>
+    
+  // --- stores helpers (injected) ---
+  function getStoresSafe() {
+    const x = window.OZON_STORES;
+    if (Array.isArray(x)) return x;
+    if (x && Array.isArray(x.stores)) return x.stores;
+    return [];
+  }
+
+  function populateStoreSelect(stores) {
+    storeSelect.innerHTML = '';
+    stores.forEach((st, idx) => {
+      const opt = document.createElement('option');
+      opt.value = String(idx);
+      opt.textContent = st.name || (`Store ${st.client_id || idx}`);
+      storeSelect.appendChild(opt);
+    });
+  }
+  // --- end stores helpers ---
+const logBox = document.getElementById('logBox');
+    const statusText = document.getElementById('statusText');
+    const storeSelect = document.getElementById('storeSelect');
+    const dateFrom = document.getElementById('dateFrom');
+    const dateTo = document.getElementById('dateTo');
+    const postingFilter = document.getElementById('postingFilter');
+    const txTableWrapper = document.getElementById('txTableWrapper');
+    const txSummary = document.getElementById('txSummary');
+    const loadBtn = document.getElementById('loadBtn');
+    const params = new URLSearchParams(location.search);
+    const presetPosting = params.get('posting') || '';
+    const presetStore = params.get('store');
+
+    const BUILTIN_STORES = [{ name: 'ПМ-Трейд (демо)', client_id: 'demo-client', api_key: 'demo-key' }];
+    let stores = [];
+    const TX_CACHE_KEY = 'ozon-transactions-cache-v1';
+
+    function log(message, data) {
+      const time = new Date().toLocaleTimeString();
+      const entry = document.createElement('div');
+      entry.innerHTML = `<strong>[${time}]</strong> ${message}`;
+      if (data) {
+        const details = document.createElement('details');
+        details.innerHTML = `<summary>Детали</summary><pre>${JSON.stringify(data, null, 2)}</pre>`;
+        entry.appendChild(details);
+      }
+      logBox.prepend(entry);
+    }
+
+    function isoDate(date) { return date.toISOString().slice(0,10); }
+    function setDefaultDates() {
+      const now = new Date();
+      const monthAgo = new Date(now.getTime() - 1000*60*60*24*30);
+      dateTo.value = isoDate(now);
+      dateFrom.value = isoDate(monthAgo);
+    }
+
+    function normalizeStores(raw) {
+      if (Array.isArray(raw)) return raw;
+      if (raw && Array.isArray(raw.stores)) return raw.stores;
+      return [];
+    }
+
+    
+      
+function loadStores() {
+  stores = Array.isArray(window.OZON_STORES) ? window.OZON_STORES.slice() : [];
+  if (!stores.length) {
+    log('Магазины не найдены: добавьте stores.secrets.js');
+    storeSelect.innerHTML = '<option>Нет магазинов</option>';
+    storeSelect.disabled = true;
+    loadBtn.disabled = true;
+    return;
+  }
+
+  storeSelect.innerHTML = '';
+  stores.forEach((st, idx) => {
+    const opt = document.createElement('option');
+    opt.value = String(idx);
+    opt.textContent = st.name || (`Store ${st.client_id || idx}`);
+    storeSelect.appendChild(opt);
+  });
+
+  storeSelect.disabled = false;
+  loadBtn.disabled = false;
+}
+
+
+
+    function readTxCache() {
+      try { return JSON.parse(localStorage.getItem(TX_CACHE_KEY) || '{}'); } catch(_) { return {}; }
+    }
+    function writeTxCache(cache) {
+      try {
+        localStorage.setItem(TX_CACHE_KEY, JSON.stringify(cache));
+      } catch (err) {
+        log('Не удалось сохранить кэш начислений (ограничение браузера)', { error: err?.message });
+      }
+    }
+
+    const normalizeKey = (val) => String(val || '').replace(/[^0-9a-z]/gi, '').toUpperCase();
+
+    function readPriceCache() {
+      try { return JSON.parse(localStorage.getItem('ozon-price-cache-v1') || '{}'); } catch(_) { return {}; }
+    }
+    function writePriceCache(cache) {
+      try { localStorage.setItem('ozon-price-cache-v1', JSON.stringify(cache)); } catch(e) { console.warn('Кэш цен не сохранён', e); }
+    }
+
+    async function fetchPrices(store, offerIds, productIds = []) {
+      const map = new Map();
+      const unique = [...new Set(offerIds)].filter(Boolean);
+      const uniqueProducts = [...new Set(productIds)].filter(Boolean);
+      const priceCache = readPriceCache();
+      const storeCache = priceCache[store.client_id] || {};
+      const missing = [];
+      const missingProducts = [];
+
+      unique.forEach((id) => {
+        const cached = storeCache[id];
+        if (cached) {
+          const val = cached.data || cached;
+          map.set(id, val);
+          map.set(normalizeKey(id), val);
+        } else {
+          missing.push(id);
+        }
+      });
+
+      uniqueProducts.forEach((pid) => {
+        const cached = storeCache[pid];
+        if (cached) {
+          const val = cached.data || cached;
+          map.set(pid, val);
+          map.set(normalizeKey(pid), val);
+        } else {
+          missingProducts.push(pid);
+        }
+      });
+
+      for (let i = 0; i < missing.length; i += 100) {
+        const slice = missing.slice(i, i + 100);
+        const body = { filter: { offer_id: slice, visibility: 'ALL' }, cursor: '', limit: 100 };
+        const json = await fetchOzon('/v5/product/info/prices', { store, body });
+        (json.items || []).forEach((item) => {
+          map.set(item.offer_id, item);
+          map.set(normalizeKey(item.offer_id), item);
+          if (!storeCache[item.offer_id]) {
+            storeCache[item.offer_id] = { data: item, fetchedAt: new Date().toISOString() };
+          }
+        });
+      }
+
+      for (let i = 0; i < missingProducts.length; i += 100) {
+        const slice = missingProducts.slice(i, i + 100).map((id) => Number(id) || id);
+        const body = { filter: { product_id: slice, visibility: 'ALL' }, cursor: '', limit: 100 };
+        const json = await fetchOzon('/v5/product/info/prices', { store, body });
+        (json.items || []).forEach((item) => {
+          const key = item.product_id || item.offer_id;
+          if (!key) return;
+          map.set(String(key), item);
+          map.set(normalizeKey(key), item);
+          if (item.offer_id) {
+            map.set(item.offer_id, item);
+            map.set(normalizeKey(item.offer_id), item);
+          }
+          if (!storeCache[key]) {
+            storeCache[key] = { data: item, fetchedAt: new Date().toISOString() };
+          }
+          if (item.offer_id && !storeCache[item.offer_id]) {
+            storeCache[item.offer_id] = { data: item, fetchedAt: new Date().toISOString() };
+          }
+        });
+      }
+
+      priceCache[store.client_id] = storeCache;
+      writePriceCache(priceCache);
+      return map;
+    }
+
+    function opInRange(op, fromIso, toIso) {
+      const raw = op.operation_date || op.date || '';
+      if (!raw) return false;
+      const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T') + 'Z';
+      const ts = Date.parse(normalized);
+      if (!Number.isFinite(ts)) return false;
+      return ts >= Date.parse(fromIso) && ts <= Date.parse(toIso);
+    }
+
+    async function fetchTransactions(store) {
+      const fromIso = `${dateFrom.value}T00:00:00Z`;
+      const toIso = `${dateTo.value}T23:59:59Z`;
+      const diff = new Date(toIso) - new Date(fromIso);
+      if (false) { /* patched: allow any period; requests should be chunked */
+        throw new Error('Период может быть любым: загрузка выполняется частями (до 1 месяца на запрос).');
+      }
+      const cache = readTxCache();
+      const storeCache = cache[store.client_id] || { operations: [], seen: {} };
+      const seen = storeCache.seen || {};
+      let operations = [...(storeCache.operations || [])];
+
+      let page = 1;
+      let pageCount = 1;
+      while (page <= pageCount) {
+        const body = { page, page_size: 1000, filter: { date: { from: fromIso, to: toIso } }, transaction_type: 'all' };
+        const json = await fetchOzon('/v3/finance/transaction/list', { store, body });
+        const rawOps = json.result?.operations || json.operations || [];
+        const ops = rawOps.map((op) => ({
+          operation_id: op.operation_id,
+          posting_number: op.posting?.posting_number || op.posting_number || op.posting?.postingNumber,
+          operation_date: op.operation_date || op.date,
+          operation_type: op.operation_type,
+          operation_type_name: op.operation_type_name,
+          amount: op.amount,
+          accruals_for_sale: op.accruals_for_sale,
+          sale_commission: op.sale_commission,
+          services: op.services,
+          items: op.items,
+          posting: op.posting,
+        }));
+        pageCount = json.result?.page_count || json.page_count || pageCount;
+        ops.forEach((op) => {
+          if (seen[op.operation_id]) return;
+          seen[op.operation_id] = true;
+          operations.push(op);
+        });
+        page += 1;
+        if (!ops.length) break;
+      }
+
+      operations = operations.filter((op) => opInRange(op, fromIso, toIso));
+      cache[store.client_id] = { operations, seen, fetchedRange: { from: fromIso, to: toIso }, savedAt: new Date().toISOString() };
+      writeTxCache(cache);
+      return operations;
+    }
+
+    function buildPostingIndex(ops) {
+      const set = new Set();
+      ops.forEach((op) => {
+        const raw = op.posting_number || op.posting?.posting_number || op.posting_number || '';
+        if (raw) set.add(raw);
+      });
+      return set;
+    }
+
+    function normalizePosting(posting, allPostings) {
+      if (!posting) return '—';
+      const parts = posting.split('-');
+      if (parts.length === 2) {
+        const prefix = `${posting}-`;
+        const match = Array.from(allPostings).find((p) => p.startsWith(prefix));
+        return match || posting;
+      }
+      return posting;
+    }
+
+    function summarizeBucket(bucket, priceMap) {
+      let payout = 0;
+      let revenue = 0;
+      let commissionRub = 0;
+      let acquiring = 0;
+      let delivery = 0;
+      let logistics = 0;
+      let handling = 0;
+      let promo = 0;
+      let other = 0;
+      let cost = 0;
+
+      bucket.items.forEach((op) => {
+        payout += Number(op.amount || 0);
+        revenue += Number(op.accruals_for_sale || 0);
+        commissionRub += -Number(op.sale_commission || 0);
+
+        (op.items || []).forEach((it) => {
+          const offerId = it.offer_id || it.offerId;
+          const productKey = it.sku || it.product_id;
+          const lookupKey = offerId || (productKey != null ? String(productKey) : '');
+          const normalized = normalizeKey(lookupKey);
+          const qty = Number(it.quantity || 1);
+          const priceInfo = lookupKey ? (priceMap.get(lookupKey) || priceMap.get(normalized)) : undefined;
+          const net = priceInfo?.price?.net_price ?? priceInfo?.net_price;
+          if (Number.isFinite(net)) cost += net * qty;
+        });
+
+        (op.services || []).forEach((svc) => {
+          const val = Number(svc.price || 0);
+          if (!Number.isFinite(val)) return;
+          const abs = Math.abs(val);
+          const name = String(svc.name || '').toLowerCase();
+          if (name.includes('acquiring')) acquiring += abs;
+          else if (name.includes('brand') || name.includes('marketing') || name.includes('promotion')) promo += abs;
+          else if (name.includes('lastmile') || name.includes('deliv')) delivery += abs;
+          else if (name.includes('directflow') || name.includes('logistic')) logistics += abs;
+          else if (name.includes('dropoff') || name.includes('return') || name.includes('pickup') || name.includes('fulfillment')) handling += abs;
+          else other += abs;
+        });
+      });
+
+      const expenses = commissionRub + acquiring + delivery + logistics + handling + promo + other;
+      const marginRub = payout - cost;
+      const marginPct = cost > 0 ? (marginRub / cost) * 100 : null;
+
+      return { payout, revenue, commissionRub, acquiring, delivery, logistics, handling, promo, other, cost, expenses, marginRub, marginPct };
+    }
+
+    async function renderTransactions(ops, store) {
+      const filterVal = postingFilter.value.trim().toLowerCase();
+      const postingIndex = buildPostingIndex(ops);
+      const grouped = new Map();
+      const allOffers = [];
+      const allProductIds = [];
+      ops.forEach((op) => {
+        const postingRaw = (op.posting_number || op.posting?.posting_number || '') || '—';
+        if (filterVal && !postingRaw.toLowerCase().includes(filterVal)) return;
+        const posting = normalizePosting(postingRaw, postingIndex);
+        const bucket = grouped.get(posting) || { total: 0, items: [], postings: new Set() };
+        bucket.total += Number(op.amount || 0);
+        bucket.items.push(op);
+        bucket.postings.add(postingRaw);
+        (op.items || []).forEach((it) => {
+          if (it.offer_id || it.offerId) allOffers.push(it.offer_id || it.offerId);
+          if (it.sku || it.product_id) allProductIds.push(String(it.sku || it.product_id));
+        });
+        grouped.set(posting, bucket);
+      });
+      if (!grouped.size) {
+        txSummary.textContent = 'Начислений: 0';
+        txTableWrapper.innerHTML = '<p class="text-muted">Нет начислений за период.</p>';
+        return;
+      }
+      let priceMap = new Map();
+      if (store) {
+        try {
+          priceMap = await fetchPrices(store, allOffers, allProductIds);
+        } catch (e) {
+          log('Не удалось получить цены для расчёта маржи, показываем операции без себестоимости', { error: e?.message });
+          priceMap = new Map();
+        }
+      }
+      
+      const totalAll = Array.from(grouped.values()).reduce((s, g) => s + g.total, 0);
+      txSummary.textContent = `Отправлений: ${grouped.size} · Сумма: ${totalAll.toFixed(2)} ₽`;
+      const rows = Array.from(grouped.entries()).map(([posting, bucket]) => {
+        const postingLabel = Array.from(bucket.postings).join(', ');
+        const summary = summarizeBucket(bucket, priceMap);
+        const firstDate = bucket.items[0]?.operation_date || bucket.items[0]?.date || '—';
+        const btnId = `detail-${posting.replace(/[^\w-]/g, '')}-${Math.random().toString(16).slice(2)}`;
+        const detailRows = bucket.items.map((op) => {
+          const date = op.operation_date || op.date || '—';
+          const type = op.operation_type_name || op.operation_type || '—';
+          const amt = Number(op.amount || 0).toFixed(2);
+          const sale = Number(op.accruals_for_sale || 0).toFixed(2);
+          const name = op.items?.[0]?.name || op.items?.[0]?.title || '—';
+          return `<tr>
+            <td>${date}</td>
+            <td>${type}</td>
+            <td>${name}</td>
+            <td>${sale} ₽</td>
+            <td>${amt} ₽</td>
+          </tr>`;
+        }).join('');
+        const marginBadge = Number.isFinite(summary.marginPct)
+          ? `<span class="badge" style="background: linear-gradient(90deg, rgba(248,113,113,0.18), rgba(34,197,94,0.2)); color:${summary.marginPct < 0 ? '#b91c1c' : '#166534'};">${summary.marginRub.toFixed(2)} ₽ · ${summary.marginPct.toFixed(1)}%</span>`
+          : '—';
+        const breakdown = `<div class="table-wrap">
+<table class="nested">
+          <thead><tr><th>Статья</th><th>Сумма</th></tr></thead>
+          <tbody>
+            <tr><td>Выручка (поступления)</td><td>${summary.payout.toFixed(2)} ₽</td></tr>
+            <tr><td>Комиссия OZON</td><td>${summary.commissionRub.toFixed(2)} ₽</td></tr>
+            <tr><td>Эквайринг</td><td>${summary.acquiring.toFixed(2)} ₽</td></tr>
+            <tr><td>Доставка/последняя миля</td><td>${summary.delivery.toFixed(2)} ₽</td></tr>
+            <tr><td>Логистика/магистраль</td><td>${summary.logistics.toFixed(2)} ₽</td></tr>
+            <tr><td>Обработка/возвраты</td><td>${summary.handling.toFixed(2)} ₽</td></tr>
+            <tr><td>Продвижение</td><td>${summary.promo.toFixed(2)} ₽</td></tr>
+            <tr><td>Прочие услуги</td><td>${summary.other.toFixed(2)} ₽</td></tr>
+            <tr><td>Себестоимость</td><td>${summary.cost.toFixed(2)} ₽</td></tr>
+            <tr><td>Маржа</td><td>${summary.marginRub.toFixed(2)} ₽</td></tr>
+            <tr><td>Маржинальность</td><td>${Number.isFinite(summary.marginPct) ? summary.marginPct.toFixed(1) + '%' : '—'}</td></tr>
+          </tbody>
+        </table>
+</div>`;
+        return `<tbody class="group">
+          <tr>
+            <td data-label="Отправление">${postingLabel || posting}</td>
+            <td data-label="Дата">${firstDate}</td>
+            <td data-label="Сумма">${bucket.total.toFixed(2)} ₽</td>
+            <td data-label="Маржа">${marginBadge}</td>
+            <td data-label="Детали"><button type="button" class="btn-small" data-target="${btnId}">Показать</button></td>
+          </tr>
+          <tr class="details" id="${btnId}">
+            <td colspan="5">
+              <div style="display:flex; flex-direction:column; gap:0.75rem;">
+                <table class="nested">
+                  <thead><tr><th>Дата</th><th>Тип</th><th>Товар</th><th>Начисления</th><th>Сумма</th></tr></thead>
+                  <tbody>${detailRows}</tbody>
+                </table>
+                ${breakdown}
+              </div>
+            </td>
+          </tr>
+        </tbody>`;
+      });
+      const rowsHtml = rows.join('');
+      txTableWrapper.innerHTML = `<div style="overflow-x:auto;"><table>
+        <thead><tr><th>Отправление</th><th>Дата</th><th>Сумма</th><th>Маржа</th><th>Расшифровка</th></tr></thead>
+        ${rowsHtml}
+      </table></div>`;
+      txTableWrapper.querySelectorAll('button[data-target]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = btn.dataset.target;
+          const row = document.getElementById(id);
+          if (!row) return;
+          const isOpen = row.classList.toggle('open');
+          btn.textContent = isOpen ? 'Скрыть' : 'Показать';
+        });
+      });
+    }
+
+    async function loadTransactions() {
+      if (!stores.length) { statusText.textContent = 'Магазины не найдены'; return; }
+      const store = stores[Number(storeSelect.value)];
+      statusText.textContent = 'Загружаем начисления…';
+      try {
+        const ops = await fetchTransactions(store);
+        statusText.textContent = `Готово, записей: ${ops.length}`;
+        await renderTransactions(ops, store);
+      } catch (e) {
+        statusText.textContent = e.message;
+        log(`Ошибка: ${e.message}`);
+      }
+    }
+
+    loadBtn.addEventListener('click', loadTransactions);
+
+    postingFilter.addEventListener('input', () => {
+      const store = stores[Number(storeSelect.value)];
+      const cache = readTxCache();
+      const ops = cache[store?.client_id]?.operations || [];
+      renderTransactions(ops, store);
+    });
+
+    (function init(){
+      setDefaultDates();
+      stores = Array.isArray(window.OZON_STORES) ? window.OZON_STORES.slice() : [];
+      populateStoreSelect(stores);
+if (presetPosting) {
+        postingFilter.value = presetPosting;
+      }
+      loadBtn.disabled = !stores.length;
+      storeSelect.disabled = !stores.length;
+      if (stores.length) {
+        const currentStore = stores[Number(storeSelect.value)];
+        const cache = readTxCache();
+        const ops = cache[currentStore?.client_id]?.operations || [];
+        if (ops.length) { renderTransactions(ops, currentStore);  setTimeout(() => { try { if (window.captureAccrualsDomNow) window.captureAccrualsDomNow(); } catch (e) { console.warn('[ACCR][DOM] post-render', e); }}, 50);
+statusText.textContent = `Загружены из кэша (${ops.length})`; }
+        if (presetPosting) { loadTransactions(); }
+      }
+    })();
+  </script>
+<script src="stores_runtime.js"></script>
+<script src="nav.js"></script>
+<script src="stores.secrets.js"></script>
+<script src="ozon_storage.js"></script>
+<script src="nav.js"></script>
+<script src="table_sort.js"></script>
+<script src="ozon_prices_detach_patch.js"></script>
+</body>
+</html>

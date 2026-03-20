@@ -1,0 +1,31 @@
+# secrets
+stores.secrets.js
+.env
+*.key
+*.pem
+
+# logs
+*.log
+backend.log
+
+# python cache
+__pycache__/
+*.pyc
+
+# caches
+_server_cache/
+
+# data/binaries
+*.xlsx
+
+# OS
+.DS_Store
+Thumbs.db
+data/
+*.bak*
+
+# runtime data / caches / exports
+data/
+*.zip
+*.sqlite
+*.bak*

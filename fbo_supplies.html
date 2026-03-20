@@ -1,0 +1,1746 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<!-- FIX_POSTINGS_PAGINATION_LIMIT_V1 -->
+<!-- FIX_ALLSTORES_LOAD_V2 -->
+<!-- FIX_BUILDCLUSTERAGG_V2 -->
+<!-- OFFERID_CANONICAL_V1 -->
+<!-- OFFERID_LEADING_ZERO_FIX_V1 -->
+<!-- CHARTS_RENDER_V1 -->
+<!-- FETCH_POSTINGS_BY_DATES_V1 -->
+<!-- OFFER_CLUSTER_FREQ_V1 -->
+<!-- AUTO_FETCH_SKUS_V1 -->
+<!-- SNAP_DATES_AB_V1 -->
+<!-- WINDOW_ONERROR_V1 -->
+<!-- FBO_STOCK_SNAPSHOT_V1 -->
+<!-- CLUSTER_ANALYTICS_FROM_LS_V1 -->
+<!-- MENU_ANALYTICS_LINK_V1 -->
+  <meta charset="UTF-8" />
+  <title>Поставки FBO — OZON</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="theme.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    .controls { gap: 10px; }
+    .grid { display:flex; gap:12px; flex-wrap:wrap; align-items:stretch; margin:12px 0; }
+    .grid > .col { flex: 1 1 520px; min-width: 320px; }
+    .chart-frame { background:#0d1117; border:1px solid var(--border); border-radius:12px; padding:12px; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:8px 10px; border-bottom:1px solid rgba(0,0,0,.08); }
+    th { text-align:left; white-space:nowrap; }
+    .muted { opacity:.75; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:rgba(47,129,247,.12); border:1px solid rgba(47,129,247,.25); }
+    .right { text-align:right; }
+  </style>
+<!-- STORES_FORCE_FALLBACK_V1 -->
+  <script src="clusters_runtime.js"></script>
+  <script src="clusters_list.js"></script>
+  <script src="ozon_date_range.js"></script>
+  <script src="ozon_api_patch.js"></script>
+  <script src="ozon_server_cache.js"></script>
+  <script src="ozon_api.js"></script>
+
+<script src="/ozon_orders_accruals_patch.js?v=2026-02-05_065103"></script>
+<script src="/ozon_costprice_patch.js?v=2026-02-05_065103"></script>
+</head>
+<body>
+  <header>
+    <div class="title">Поставки FBO</div>
+    <nav class="nav"></nav>
+  </header>
+
+  <div class="controls" style="padding:0 20px 12px;">
+    <select id="storeSelect"></select>
+
+    <input type="date" id="dateFrom" class="date-input" />
+    <input type="date" id="dateTo" class="date-input" />
+
+    <input id="offerFilter" class="filter-input" type="search" placeholder="Фильтр по offer_id (опционально)" />
+
+    <button id="loadBtn">Загрузить</button>
+<!-- FBO_STOCK_SNAPSHOT_V1 -->
+<button id="btnSnapshotStocks" style="margin-left:8px;">Слепок остатков (stocks)</button>
+
+  </div>
+
+  <main>
+    <section class="card" aria-live="polite">
+      <h2>Статус</h2>
+      <div class="status-row" style="justify-content:space-between;">
+        <span id="statusText">Выберите магазин и нажмите «Загрузить»</span>
+        <span class="badge" id="summaryBadge"></span>
+      </div>
+      <div class="muted" style="margin-top:8px;">
+        Цель: анализ уходимости (offer_id) и распределения по кластерам (cluster_id) для FBO и FBS.
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="grid">
+        <div class="col">
+          <h2>Продажи по дням</h2>
+<div style=\"height:260px;\"><canvas id=\"chartSalesByDays\"></canvas></div>
+</div>
+          <div class="muted" style="margin-top:8px;">
+            Будет строиться по продажам: total qty / total revenue по дням (FBO отдельно, FBS отдельно).
+          </div>
+        </div>
+        <div class="col">
+          <h2>Продажи по кластерам</h2>
+<div style=\"height:260px;\"><canvas id=\"chartSalesByClusters\"></canvas></div>
+</div>
+          <div class="muted" style="margin-top:8px;">
+            Нужен source поля cluster_id в заказах/аналитике.
+          </div>
+        </div>
+      </div>
+
+      <h2>Товары: остаток / продажи / скорость</h2>
+      <div id="tableWrap" class="table-wrapper"></div>
+
+      <div class="muted" style="margin-top:10px;">
+        Рекомендации будут рассчитываться как: "где скорость продаж высокая, а остаток низкий".
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Лог запросов к OZON</h2>
+      <div class="log" id="logBox"></div>
+    </section>
+  </main>
+
+  <script src="stores.secrets.js?v=3"></script>
+  <script src="scripts/ozon-core.js?v=19"></script>
+  <script>
+
+// STORES_DEBUG_V1
+try {
+  console.log('[STORES_DEBUG_V1] OZON_STORES len =', (window.OZON_STORES||[]).length, 'stores len =', (window.stores||[]).length);
+} catch(e) {}
+    const logBox = document.getElementById('logBox');
+    const statusText = document.getElementById('statusText');
+    const summaryBadge = document.getElementById('summaryBadge');
+    const tableWrap = document.getElementById('tableWrap');
+    const storeSelect = document.getElementById('storeSelect');
+    const dateFrom = document.getElementById('dateFrom');
+    const dateTo = document.getElementById('dateTo');
+    const offerFilter = document.getElementById('offerFilter');
+    const loadBtn = document.getElementById('loadBtn');
+
+
+
+// FBO_STOCK_SNAPSHOT_V1: кнопка "Слепок остатков"
+const btnSnapshotStocks = document.getElementById('btnSnapshotStocks');
+if (btnSnapshotStocks) {
+  btnSnapshotStocks.addEventListener('click', async () => {
+    const st = document.getElementById('stocksDeltaStatus');
+// если задан фильтр по артикулу — попробуем взять SKU из сохранённой карты
+       const offerQ = String(document.getElementById('offerFilter')?.value || '').trim();
+       if (offerQ) {
+         try {
+           const mp = loadOfferSkuMap();
+           const sku1 = mp?.[offerQ] ? String(mp[offerQ]) : '';
+           if (sku1) {
+             const items1 = await fetchStocksAnalytics(store, [sku1]);
+             const storeKey1 = String(store?.name ?? store?.title ?? store?.id ?? store?.clientId ?? store?.client_id ?? 'store0');
+             const info1 = saveTodaySnapshot(storeKey1, items1);
+             st.textContent = `Слепок (по offer_id=${offerQ}) сохранён: ${info1.day} (UTC). Позиций: ${items1.length}.`;
+             renderStocksDeltaTable(storeKey1, arr || []);
+             return;
+           } else {
+             // не прерываем, просто пойдём общим сценарием
+             st.textContent = `SKU для offer_id=${offerQ} не найден в карте. Сделай общий слепок или загрузи цены/заказы.`;
+           }
+         } catch(e) {}
+       }
+
+    try {
+      st.textContent = 'Снимаю слепок остатков (v1/analytics/stocks)...';
+
+      const {store} = getSelectedStoreSafe();
+      if (!store) throw new Error('Магазин не выбран.');
+
+      // Берём postings из LS (у тебя эта функция уже есть)
+      const {arr} = (typeof loadPostingsFromLS === 'function') ? (loadPostingsFromLS() || {arr:[]}) : ({arr:[]});
+      const skus = await ensureSkusList(store, (m)=>{ 
+          try{ st.textContent = m; }catch(e){} 
+          try{ log(m); }catch(e){} 
+        });
+
+      if (!skus.length) {
+        throw new Error('Не нашёл список SKU. Сначала загрузи товары/заказы (или сохрани ozon_skus_v1 в localStorage).');
+      }
+
+      const items = await fetchStocksAnalytics(store, skus);
+      const storeKey = String(store?.name ?? store?.title ?? store?.id ?? store?.clientId ?? store?.client_id ?? 'store0');
+
+      const info = saveTodaySnapshot(storeKey, items);
+       try { fillSnapshotSelects(storeKey); } catch(e) {}
+      st.textContent = `Слепок сохранён: ${info.day} (UTC). Позиций: ${items.length}.`;
+
+      // Обновим таблицу с текущим спросом
+      renderStocksDeltaTable(storeKey, arr || []);
+    } catch(e) {
+      if (st) st.textContent = 'Ошибка слепка: ' + (e?.message || String(e));
+      console.warn(e);
+    }
+  });
+}
+
+/* ===== FBO_STOCK_SNAPSHOT_V1 ===== */
+
+// localStorage key
+const OZON_STOCK_SNAPSHOTS_KEY = 'ozon_stock_snapshots_v1';
+
+const OZON_OFFER_SKU_MAP_KEY = 'ozon_offer_sku_map_v1';
+
+function loadOfferSkuMap(){
+  try { return JSON.parse(localStorage.getItem(OZON_OFFER_SKU_MAP_KEY) || '{}') || {}; } catch(e){ return {}; }
+}
+function saveOfferSkuMap(mp){
+  try { localStorage.setItem(OZON_OFFER_SKU_MAP_KEY, JSON.stringify(mp || {})); } catch(e){}
+}
+function mergeOfferSkuFromStocksItems(items){
+  const mp = loadOfferSkuMap();
+  for(const it of (items||[])){
+    const offer = String(it?.offer_id ?? '').trim();
+    const sku = it?.sku != null ? String(it.sku) : '';
+    if(offer && sku) mp[offer] = sku;
+  }
+  saveOfferSkuMap(mp);
+  return mp;
+}
+
+// UTC day key YYYY-MM-DD
+function utcDayKey(d=new Date()) {
+  const x = new Date(d.getTime());
+  const y = x.getUTCFullYear();
+  const m = String(x.getUTCMonth()+1).padStart(2,'0');
+  const day = String(x.getUTCDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+
+function safeJsonParse(x, fallback) {
+  try { return x ? JSON.parse(x) : (fallback ?? null); } catch(e){ return (fallback ?? null); }
+}
+
+function loadStockSnapshots() {
+  return safeJsonParse(localStorage.getItem(OZON_STOCK_SNAPSHOTS_KEY), {}) || {};
+}
+function saveStockSnapshots(obj) {
+  try { localStorage.setItem(OZON_STOCK_SNAPSHOTS_KEY, JSON.stringify(obj || {})); } catch(e){}
+}
+
+function normClusterName(x){
+  return String(x ?? '').trim().toLowerCase();
+}
+
+function pickStoreAuthHeaders(store){
+  // Поддержим разные имена полей в stores
+  const cid = store?.client_id ?? store?.clientId ?? store?.client ?? store?.cid ?? store?.ClientId ?? store?.['Client-Id'];
+  const api = store?.api_key ?? store?.apiKey ?? store?.key ?? store?.ApiKey ?? store?.['Api-Key'];
+  if(!cid || !api) return null;
+  return {
+    'Client-Id': String(cid),
+    'Api-Key': String(api),
+    'Content-Type': 'application/json'
+  };
+}
+
+/* ===== AUTO_FETCH_SKUS_V1 ===== */
+
+// Пагинация по товарам: получаем product_id списком
+async function fetchAllProductIds(store){
+  const hdr = pickStoreAuthHeaders(store);
+  if(!hdr) throw new Error('Нет Client-Id/Api-Key у выбранного магазина (stores).');
+
+  const out = [];
+  let last_id = "";
+  const limit = 1000;
+
+  for(let iter=0; iter<50; iter++){ // предохранитель
+    const body = {
+      filter: { visibility: "ALL" },
+      last_id: last_id,
+      limit: limit
+    };
+
+    const r = await fetch('https://api-seller.ozon.ru/v2/product/list', {
+      method: 'POST',
+      headers: hdr,
+      body: JSON.stringify(body)
+    });
+
+    const t = await r.text();
+    let j=null; try{ j = t ? JSON.parse(t) : null; }catch(e){ j=null; }
+    if(!r.ok){
+      const msg = (j && (j.message || j.error)) ? (j.message || j.error) : (t || `HTTP ${r.status}`);
+      throw new Error('product/list: ' + msg);
+    }
+
+    const items = j?.result?.items || j?.items || [];
+    for(const it of items){
+      const pid = it?.product_id ?? it?.productId ?? null;
+      if(pid!=null) out.push(pid);
+    }
+
+    last_id = j?.result?.last_id ?? j?.last_id ?? "";
+    if(!items.length || !last_id) break;
+  }
+
+  return out;
+}
+
+// По product_id получаем sku
+async function fetchSkusByProductIds(store, productIds){
+  const hdr = pickStoreAuthHeaders(store);
+  if(!hdr) throw new Error('Нет Client-Id/Api-Key у выбранного магазина (stores).');
+
+  const list = (productIds||[]).map(x=>Number(x)).filter(x=>Number.isFinite(x) && x>0);
+  const out = [];
+
+  const chunkSize = 1000;
+  for(let i=0;i<list.length;i+=chunkSize){
+    const chunk = list.slice(i, i+chunkSize);
+    const body = { product_id: chunk };
+
+    const r = await fetch('https://api-seller.ozon.ru/v2/product/info/list', {
+      method: 'POST',
+      headers: hdr,
+      body: JSON.stringify(body)
+    });
+
+    const t = await r.text();
+    let j=null; try{ j = t ? JSON.parse(t) : null; }catch(e){ j=null; }
+    if(!r.ok){
+      const msg = (j && (j.message || j.error)) ? (j.message || j.error) : (t || `HTTP ${r.status}`);
+      throw new Error('product/info/list: ' + msg);
+    }
+
+    const items = j?.result?.items || j?.items || [];
+    for(const it of items){
+      // В разных ответах бывает sku / sources[0].sku / ...
+      let sku = null;
+      // варианты расположения SKU в ответах Ozon
+      sku = it?.sku ?? null;
+      if(!sku) sku = it?.sources?.[0]?.sku ?? null;
+      if(!sku) sku = it?.stocks?.[0]?.sku ?? null;
+      if(!sku) sku = it?.result?.sku ?? null;
+      if(!sku && Array.isArray(it?.sources)) {
+        for(const src of it.sources){
+          if(src?.sku){ sku = src.sku; break; }
+        }
+      }
+      
+       if(sku!=null) out.push(String(sku));
+
+       // --- OFFERID_CANONICAL_V1: строим map stripZeros(offer_id)->offer_id ---
+       try{
+         const off = it?.offer_id ?? it?.offerId ?? it?.offerID ?? it?.offer ?? null;
+         const offS = String(off ?? '').trim();
+         if(offS && /^\d+$/.test(offS) && offS.startsWith('0')){
+           const k = stripLeadingZeros(offS);
+           const mp = loadOfferCanonMap();
+           if(k && !mp[k]) { mp[k] = offS; saveOfferCanonMap(mp); }
+         }
+       }catch(e){}
+if(sku!=null) out.push(String(sku));
+    }
+  }
+
+  // уникализируем
+  return Array.from(new Set(out)).filter(Boolean);
+}
+
+async function ensureSkusList(store, logFn){
+  // 1) попробуем взять из localStorage
+  try{
+    const raw = localStorage.getItem('ozon_skus_v1');
+    const arr = raw ? JSON.parse(raw) : null;
+    if(Array.isArray(arr) && arr.length) return arr.map(x=>String(x)).filter(Boolean);
+  }catch(e){}
+
+  // 2) иначе — тянем из API
+  if(logFn) logFn('SKU: не нашли в localStorage, загружаю из Ozon API...');
+  const pids = await fetchAllProductIds(store);
+  if(!pids.length) throw new Error('Не нашли товары в Ozon (product/list вернул пусто).');
+
+  if(logFn) logFn('SKU: найдено товаров: ' + pids.length + '. Запрашиваю SKU...');
+  const skus = await fetchSkusByProductIds(store, pids);
+
+  if(!skus.length) throw new Error('Не получили SKU из product/info/list (пусто).');
+  try { localStorage.setItem('ozon_skus_v1', JSON.stringify(skus)); } catch(e){}
+
+  if(logFn) logFn('SKU: сохранено в localStorage ozon_skus_v1: ' + skus.length);
+  return skus;
+}
+
+/* ===== /AUTO_FETCH_SKUS_V1 ===== */
+/* ===== OFFERID_CANONICAL_V1 ===== */
+const OZON_OFFER_CANON_MAP_KEY = "ozon_offer_canon_map_v1";
+
+function stripLeadingZeros(x){
+  const s = String(x ?? '').trim();
+  if(!s) return '';
+  // только если цифры
+  if(!/^\d+$/.test(s)) return s;
+  return s.replace(/^0+/, '') || '0';
+}
+
+function loadOfferCanonMap(){
+  try{ return JSON.parse(localStorage.getItem(OZON_OFFER_CANON_MAP_KEY) || "{}") || {}; }
+  catch(e){ return {}; }
+}
+
+function saveOfferCanonMap(mp){
+  try{ localStorage.setItem(OZON_OFFER_CANON_MAP_KEY, JSON.stringify(mp||{})); }catch(e){}
+}
+
+function canonicalOfferId(raw){
+  let v = String(raw ?? '').trim();
+  if(!v) return '';
+  // НИКОГДА не Number() — иначе потеряем ведущие нули
+  const mp = loadOfferCanonMap();
+  const k = stripLeadingZeros(v);
+  // если есть канон — вернём его (например 6161 -> 06161)
+  if(k && mp[k]) return String(mp[k]);
+  return v;
+}
+/* ===== /OFFERID_CANONICAL_V1 ===== */
+
+/* ===== FETCH_POSTINGS_BY_DATES_V1 ===== */
+
+async function fetchPostingsList(store, schema, sinceISO, toISO){
+  const hdr = pickStoreAuthHeaders(store);
+  if(!hdr) throw new Error('Нет Client-Id/Api-Key у выбранного магазина (stores).');
+
+  const out = [];
+  const sch = String(schema || '').toUpperCase();
+
+  // ВАЖНО: у FBO лимит обычно 100 (если поставить 1000 — сервер отдаёт 100,
+  // а наша старая логика items.length < limit ошибочно завершает пагинацию).
+  const limit = (sch === 'FBO') ? 100 : 1000;
+  let offset = 0;
+
+  const url = (sch === 'FBS')
+    ? 'https://api-seller.ozon.ru/v3/posting/fbs/list'
+    : 'https://api-seller.ozon.ru/v2/posting/fbo/list';
+
+  for(let iter=0; iter<5000; iter++){
+    const body = {
+      dir: "ASC",
+      filter: { since: sinceISO, to: toISO },
+      limit: limit,
+      offset: offset,
+      with: { analytics_data: true, financial_data: true }
+    };
+
+    const r = await fetch(url, { method:'POST', headers: hdr, body: JSON.stringify(body) });
+    const t = await r.text();
+    let j=null; try{ j = t ? JSON.parse(t) : null; }catch(e){ j=null; }
+
+    if(!r.ok){
+      const msg = (j && (j.message || j.error)) ? (j.message || j.error) : (t || `HTTP ${r.status}`);
+      throw new Error('posting/list: ' + msg);
+    }
+
+    const res = (j && (j.result ?? j)) || {};
+    const items = res.postings || res.items || j?.postings || j?.items || [];
+
+    if(items && items.length){
+      for(const it of items){
+        try { it._schema = sch; } catch(e){}
+        out.push(it);
+      }
+    }
+
+    // Если сервер даёт has_next — используем его (самый надёжный вариант)
+    if(res.has_next !== undefined){
+      if(!res.has_next) break;
+    } else {
+      // иначе заканчиваем только на пустой странице
+      if(!items || !items.length) break;
+    }
+
+    offset += limit;
+
+    // предохранитель
+    if(out.length > 300000) break;
+  }
+
+  return out;
+}
+
+
+async function fetchPostingsByDatesAndSave(store, logFn){
+  // даты
+  const fromEl = document.getElementById('dateFrom') || document.getElementById('since');
+  const toEl   = document.getElementById('dateTo')   || document.getElementById('to');
+  const fromDay = fromEl?.value || '';
+  const toDay   = toEl?.value || '';
+  if(!fromDay || !toDay) throw new Error('Укажи даты.');
+
+  // Ozon ожидает ISO с временем; задаём границы суток
+  const sinceISO = fromDay + "T00:00:00.000Z";
+  const toISO    = toDay   + "T23:59:59.999Z";
+
+  // --- FIX_ALLSTORES_LOAD_V2: "Все магазины" определяем по storeSelect.value ---
+  const selObj = store;
+
+  const selEl = document.getElementById('storeSelect');
+  const selVal = selEl ? String(selEl.value || '').trim() : '';
+
+  const allStores = (window.OZON_STORES || OZON_STORES || stores || []);
+  let storesToLoad = [];
+
+
+  const isAll = (!selVal || selVal === '__all__' || selVal === 'all');
+  if(isAll){
+    storesToLoad = Array.isArray(allStores) ? allStores : [];
+  } else {
+    // пытаемся найти магазин по id/имени/client_id (как у вас хранится в stores)
+    /* placeholder removed */
+    storesToLoad = [selObj];
+  }
+
+  // если нашли по value — используем его
+  try{
+    if(!isAll){
+      let found = null;
+      for(const st of (Array.isArray(allStores) ? allStores : [])){
+        const id  = String(st?.id || '').trim();
+        const nm  = String(st?.name || '').trim();
+        const cid = String(st?.client_id || st?.clientId || '').trim();
+        if(selVal && (selVal === id || selVal === nm || selVal === cid)){
+          found = st; break;
+        }
+      }
+      if(found) storesToLoad = [found];
+    }
+  }catch(e){}
+
+  storesToLoad = (storesToLoad || []).filter(st => st && (st.client_id || st.clientId) && (st.api_key || st.apiKey));
+
+  if(logFn) logFn('STORES_TO_LOAD=' + String(storesToLoad.length) + (isAll ? ' (ALL)' : ''));
+  const fbo = [];
+  const fbs = [];
+
+  for(const st of storesToLoad){
+    try{
+      if(logFn) logFn('Загружаю postings FBO за период... [' + String(st?.name || st?.id || st?.client_id || '') + ']');
+      const a = await fetchPostingsList(st, 'FBO', sinceISO, toISO);
+      for(const it of (a || [])) fbo.push(it);
+    }catch(e){
+      if(logFn) logFn('FBO ERROR [' + String(st?.name || st?.id || st?.client_id || '') + ']: ' + (e?.message || e));
+    }
+
+    try{
+      if(logFn) logFn('Загружаю postings FBS за период... [' + String(st?.name || st?.id || st?.client_id || '') + ']');
+      const b = await fetchPostingsList(st, 'FBS', sinceISO, toISO);
+      for(const it of (b || [])) fbs.push(it);
+    }catch(e){
+      if(logFn) logFn('FBS ERROR [' + String(st?.name || st?.id || st?.client_id || '') + ']: ' + (e?.message || e));
+    }
+  }
+  // --- /FIX_ALLSTORES_LOAD_V2 ---
+
+
+  const all = [].concat(fbo || [], fbs || []);
+  try{
+    localStorage.setItem("ozon_last_postings_v1", JSON.stringify(all));
+    localStorage.setItem("ozon_last_postings_ts_v1", String(Date.now()));
+  }catch(e){}
+
+  if(logFn) logFn('OK: postings сохранены в localStorage: ' + all.length);
+  return {all, fromDay, toDay};
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('btnFetchPostingsApi');
+  if(!btn) return;
+
+  btn.addEventListener('click', async () => {
+    const st = document.getElementById('offerClusterFreqStatus');
+    try{
+      const {store} = getSelectedStoreSafe();
+      if(!store) throw new Error('Не выбран магазин.');
+
+      const logFn = (m) => {
+        try { if(st) st.textContent = m; } catch(e){}
+        try { log(m); } catch(e){}
+      };
+
+      await fetchPostingsByDatesAndSave(store, logFn);
+
+      // после загрузки — строим обе таблицы
+      try { renderOfferClusterFreq(); } catch(e){}
+      try {
+        const storeKey = String(store?.name ?? store?.title ?? store?.id ?? store?.clientId ?? store?.client_id ?? 'store0');
+        const {arr} = (typeof loadPostingsFromLS === 'function') ? (loadPostingsFromLS() || {arr:[]}) : ({arr:[]});
+        renderStocksDeltaTable(storeKey, arr || []);
+      } catch(e){}
+    }catch(e){
+      try { if(st) st.textContent = 'Ошибка: ' + (e?.message || String(e)); } catch(_){}
+      try { log('Ошибка: ' + (e?.message || String(e))); } catch(_){}
+    }
+  });
+});
+
+/* ===== /FETCH_POSTINGS_BY_DATES_V1 ===== */
+
+
+async function fetchStocksAnalytics(store, skus){
+  const hdr = pickStoreAuthHeaders(store);
+  if(!hdr) throw new Error('Нет Client-Id/Api-Key у выбранного магазина (stores).');
+
+  const list = (skus || []).map(x => String(x)).filter(Boolean);
+  if(!list.length) return [];
+
+  const out = [];
+  const chunkSize = 100;
+
+  for(let i=0; i<list.length; i+=chunkSize){
+    const chunk = list.slice(i, i+chunkSize);
+    const body = { skus: chunk };
+
+    const r = await fetch('https://api-seller.ozon.ru/v1/analytics/stocks', {
+      method: 'POST',
+      headers: hdr,
+      body: JSON.stringify(body)
+    });
+
+    const t = await r.text();
+    let j = null;
+    try { j = t ? JSON.parse(t) : null; } catch(e){ j = null; }
+
+    if(!r.ok) {
+      const msg = (j && (j.message || j.error)) ? (j.message || j.error) : (t || `HTTP ${r.status}`);
+      throw new Error('stocks analytics: ' + msg);
+    }
+
+    const items = j?.items || [];
+    for(const it of items) out.push(it);
+  }
+
+  return out;
+}
+
+function indexStocksItems(items){
+  // индекс: offer_id -> { sku, clusters: { cluster_id: {cluster_name, available, ads_cluster} } }
+  const out = {};
+  for(const it of (items||[])){
+    const offer = String(it?.offer_id ?? '').trim();
+    const sku = it?.sku != null ? String(it.sku) : '';
+    const cid = it?.cluster_id != null ? String(it.cluster_id) : '';
+    const cname = String(it?.cluster_name ?? '').trim();
+    const avail = Number(it?.available_stock_count ?? 0) || 0;
+    const adsC = Number(it?.ads_cluster ?? 0) || 0;
+    if(!offer || !cid) continue;
+    if(!out[offer]) out[offer] = { offer_id: offer, sku: sku, clusters: {} };
+    out[offer].sku = out[offer].sku || sku;
+    out[offer].clusters[cid] = { cluster_id: cid, cluster_name: cname, available: avail, ads_cluster: adsC };
+  }
+  return out;
+}
+
+function saveTodaySnapshot(storeKey, items){
+  const snaps = loadStockSnapshots();
+  try { mergeOfferSkuFromStocksItems(items); } catch(e) {}
+  const day = utcDayKey();
+  snaps[storeKey] = snaps[storeKey] || {};
+  snaps[storeKey][day] = {
+    ts: Date.now(),
+    day,
+    indexed: indexStocksItems(items)
+  };
+  saveStockSnapshots(snaps);
+  return {storeKey, day, ts: snaps[storeKey][day].ts};
+}
+
+function prevDayKey(dayKey){
+  const [y,m,d] = String(dayKey).split('-').map(x=>parseInt(x,10));
+  if(!y||!m||!d) return null;
+  const dt = new Date(Date.UTC(y, m-1, d, 12, 0, 0));
+  dt.setUTCDate(dt.getUTCDate()-1);
+  return utcDayKey(dt);
+}
+
+function getSnapshot(storeKey, dayKey){
+  const snaps = loadStockSnapshots();
+  return snaps?.[storeKey]?.[dayKey] || null;
+}
+
+
+/* ===== SNAP_DATES_AB_V1 helpers ===== */
+function listSnapshotDays(storeKey){
+  try{
+    const snaps = loadStockSnapshots();
+    const obj = snaps?.[storeKey] || {};
+    const days = Object.keys(obj || {}).filter(Boolean).sort(); // YYYY-MM-DD
+    return days;
+  }catch(e){ return []; }
+}
+
+function fillSnapshotSelects(storeKey){
+  const a = document.getElementById('snapDayA');
+  const b = document.getElementById('snapDayB');
+  if(!a || !b) return;
+
+  const days = listSnapshotDays(storeKey);
+
+  function fill(sel, selected){
+    sel.innerHTML = '';
+    // опция "авто"
+    const o0 = document.createElement('option');
+    o0.value = '';
+    o0.textContent = 'авто';
+    sel.appendChild(o0);
+
+    for(const d of days){
+      const o = document.createElement('option');
+      o.value = d;
+      o.textContent = d;
+      sel.appendChild(o);
+    }
+    if(selected && days.includes(selected)) sel.value = selected;
+    else sel.value = '';
+  }
+
+  // дефолт: B = сегодня (если есть), A = предыдущая дата (если есть)
+  const dayB = days.length ? days[days.length-1] : '';
+  const dayA = (days.length >= 2) ? days[days.length-2] : '';
+
+  fill(a, dayA);
+  fill(b, dayB);
+}
+
+function getSelectedSnapDays(){
+  const a = document.getElementById('snapDayA');
+  const b = document.getElementById('snapDayB');
+  return {
+    dayA: a ? String(a.value||'').trim() : '',
+    dayB: b ? String(b.value||'').trim() : ''
+  };
+}
+/* ===== /SNAP_DATES_AB_V1 helpers ===== */
+function getSelectedStoreSafe(){
+  // 1) prefer local variable 'stores' if present
+  let list = [];
+  try {
+    if (typeof stores !== 'undefined' && Array.isArray(stores) && stores.length) list = stores;
+  } catch(e) {}
+
+  // 2) fallbacks from global
+  if (!list.length) {
+    list = window.stores || window.OZON_STORES || window.ozonStores || window.OzonStores || [];
+  }
+
+  // 3) selected index from select
+  let idx = 0;
+  try {
+    const sel = document.getElementById('storeSelect');
+    const v = sel ? String(sel.value || '') : '';
+    if (v && v !== 'all') idx = Number(v) || 0;
+  } catch(e) {}
+
+  return {store: list?.[idx] || null, stores: list, idx};
+}
+
+function extractOfferClusterDemandFromPostings(allPostings){
+  // demand: demand[clusterNameNorm][offer_id] = {qty, revenue}
+  // revenue считаем как оборот по строкам заказа:
+  // 1) если есть total_price / totalPrice -> берём как итог строки
+  // 2) иначе берём price (unit) * quantity
+  const demand = {};
+  const postings = allPostings || [];
+
+  for(const p of postings){
+    const scheme = String(p?._schema ?? p?.schema ?? '').toUpperCase();
+    const fd = p?.financial_data || p?.financialData || null;
+
+    // кластер назначения берём из financial_data.cluster_to
+    const clTo = (fd?.cluster_to ?? fd?.clusterTo ?? p?.cluster_to ?? p?.clusterTo ?? '').toString().trim();
+    const clN = normClusterName(clTo || '');
+    if(!clN) continue;
+
+    const items = (typeof postingItems === 'function')
+      ? (postingItems(p) || [])
+      : (p?.products || p?.items || []);
+
+    for(const line of (items||[])){
+      const offerRaw = (line?.offer_id ?? line?.offerId ?? line?.offerID ?? line?.offer ?? '');
+      const skuRaw   = (line?.sku ?? line?.SKU ?? '');
+      const nameRaw  = (line?.name ?? line?.product_name ?? '');
+
+      // ВАЖНО: строка (не Number), иначе теряем ведущие нули
+      let offer = String(offerRaw ?? '').trim();
+      
+       offer = canonicalOfferId(offer);const sku  = String(skuRaw ?? '').trim();
+
+      // fallback: достаём "Арт.06161" из name, если offer пустой/подозрительный
+      let art = '';
+      try{
+        const m = String(nameRaw||'').match(/арт\.?\s*([0-9]{3,})/i);
+        if(m) art = String(m[1]||'').trim();
+      }catch(e){}
+
+      const key = offer || art || sku;
+      if(!key) continue;
+      
+
+      const qty = Number(line?.quantity ?? line?.qty ?? line?.count ?? 0) || 0;
+      if(!qty) continue;
+
+      // total line price if provided
+      const totalLine = Number(line?.total_price ?? line?.totalPrice ?? line?.total ?? 0) || 0;
+
+      // unit price candidates
+      const unitPrice = Number(
+        line?.price ??
+        line?.selling_price ??
+        line?.unit_price ??
+        line?.unitPrice ??
+        line?.item_price ??
+        line?.product_price ??
+        0
+      ) || 0;
+
+      let rev = 0;
+      if(totalLine) rev = totalLine;
+      else if(unitPrice) rev = unitPrice * qty;
+
+      demand[clN] = demand[clN] || {};
+      demand[clN][key] = demand[clN][key] || {qty:0, revenue:0, scheme: scheme || '', offer_id: offer, sku: sku};
+      demand[clN][key].qty += qty;
+      demand[clN][key].revenue += rev;
+    }
+  }
+
+  return demand;
+}
+/* REV_CALC_FIX_V2 */
+
+/* ===== OFFER_CLUSTER_FREQ_V1 ===== */
+
+function loadPostingsLS(){
+  try{
+    const raw = localStorage.getItem("ozon_last_postings_v1");
+    const ts  = localStorage.getItem("ozon_last_postings_ts_v1");
+    const arr = raw ? JSON.parse(raw) : [];
+    return {arr: Array.isArray(arr) ? arr : [], ts: ts ? Number(ts) : null};
+  }catch(e){
+    return {arr: [], ts: null};
+  }
+}
+
+function renderOfferClusterFreq(){
+  const st = document.getElementById('offerClusterFreqStatus');
+  const tb = document.querySelector('#offerClusterFreqTable tbody');
+  if(!tb) return;
+
+  const {arr, ts} = loadPostingsLS();
+  if(!arr.length){
+    if(st) st.textContent = 'Нет ozon_last_postings_v1 в localStorage. Открой страницу "Заказы" и нажми "Загрузить", потом вернись сюда.';
+    tb.innerHTML = '';
+    return;
+  }
+
+  // период для скорости: since/to или dateFrom/dateTo
+  let daysPeriod = 7;
+  try{
+    const sinceEl = document.getElementById('since') || document.getElementById('dateFrom');
+    const toEl    = document.getElementById('to')   || document.getElementById('dateTo');
+    if(sinceEl && toEl && sinceEl.value && toEl.value){
+      daysPeriod = daysBetweenInclusive(sinceEl.value, toEl.value);
+    }
+  }catch(e){}
+
+  const demand = extractOfferClusterDemandFromPostings(arr);
+
+  const rows = [];
+  for(const [clN, offers] of Object.entries(demand || {})){
+    for(const [offer, rec] of Object.entries(offers || {})){
+      const qty = Number(rec?.qty || 0) || 0;
+      const revenue = Number(rec?.revenue || 0) || 0;
+      const velocity = daysPeriod ? (qty / daysPeriod) : qty;
+      rows.push({cluster: clN, offer, qty, revenue, velocity});
+    }
+  }
+
+  const sortMode = String(document.getElementById('freqSort')?.value || 'qty');
+  rows.sort((a,b)=> (sortMode==='revenue' ? (b.revenue-a.revenue) : (b.qty-a.qty)) || (b.velocity-a.velocity));
+
+  const topN = Number(document.getElementById('freqTopN')?.value || 200) || 200;
+  const out = rows.slice(0, Math.max(10, topN));
+
+  tb.innerHTML = '';
+  for(const r of out){
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + String(r.cluster) + '</td>' +
+      '<td><code>' + String(r.offer) + '</code></td>' +
+      '<td style="text-align:right;">' + (r.qty||0).toLocaleString('ru-RU') + '</td>' +
+      '<td style="text-align:right;">' + (r.revenue||0).toLocaleString('ru-RU', {maximumFractionDigits:0}) + '</td>' +
+      '<td style="text-align:right;">' + (r.velocity||0).toLocaleString('ru-RU', {maximumFractionDigits:2}) + '</td>';
+    tb.appendChild(tr);
+  }
+
+  const tsTxt = ts ? (new Date(ts)).toLocaleString('ru-RU') : 'неизвестно';
+  if(st) st.textContent = 'Постингов: ' + arr.length + '. Период: ~' + daysPeriod + ' дн. Обновление postings: ' + tsTxt + '. Строк: ' + out.length + ' (из ' + rows.length + ').';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('btnRenderOfferClusterFreq');
+  if(btn) btn.addEventListener('click', renderOfferClusterFreq);
+});
+
+/* ===== /OFFER_CLUSTER_FREQ_V1 ===== */
+function daysBetweenInclusive(fromISO, toISO){
+  try{
+    const a = new Date(fromISO);
+    const b = new Date(toISO);
+    if(!isFinite(a) || !isFinite(b)) return 1;
+    const x = Date.UTC(a.getFullYear(),a.getMonth(),a.getDate());
+    const y = Date.UTC(b.getFullYear(),b.getMonth(),b.getDate());
+    const d = Math.floor((y-x)/86400000) + 1;
+    return d > 0 ? d : 1;
+  }catch(e){ return 1; }
+}
+
+function renderStocksDeltaTable(storeKey, allPostings){
+  const status = document.getElementById('stocksDeltaStatus');
+  const tb = document.querySelector('#stocksDeltaTable tbody');
+  if(!tb) return;
+
+  const autoB = utcDayKey();
+  const autoA = prevDayKey(autoB);
+
+  const sel = getSelectedSnapDays();
+  const dayA = sel.dayA || autoA;   // A = "вчера/раньше"
+  const dayB = sel.dayB || autoB;   // B = "сегодня/позже"
+
+  const snapA = dayA ? getSnapshot(storeKey, dayA) : null;
+  const snapB = dayB ? getSnapshot(storeKey, dayB) : null;
+const idxB = snapB?.indexed || {};
+  const idxA = snapA?.indexed || {};
+
+  // спрос из заказов по cluster_to (строкой)
+  const demand = extractOfferClusterDemandFromPostings(allPostings || []);
+
+  // период по инпутам (если у страницы есть since/to)
+  let daysPeriod = 7;
+  try{
+    const sinceEl = document.getElementById('since');
+    const toEl = document.getElementById('to');
+    if(sinceEl && toEl && sinceEl.value && toEl.value){
+      daysPeriod = daysBetweenInclusive(sinceEl.value, toEl.value);
+    }
+  }catch(e){}
+
+  const targetDays = Number(document.getElementById('targetDays')?.value ?? 14) || 14;
+  const mode = String(document.getElementById('velocityMode')?.value ?? 'orders');
+
+  // Собираем строки: берём кластеры из today (или prev), и мёрджим с demand по названию кластера
+  const rows = []
+
+  tb.innerHTML = '';
+
+  function pushRow(clusterName, offer, sku, prevAvail, todayAvail, adsCluster, demandRec){
+    const delta = (todayAvail - prevAvail);
+    const qty = demandRec ? (demandRec.qty || 0) : 0;
+    const revenue = demandRec ? (demandRec.revenue || 0) : 0;
+
+    let velocity = 0;
+    if(mode === 'ads_cluster'){
+      velocity = Number(adsCluster || 0) || 0;
+    } else {
+      velocity = daysPeriod ? (qty / daysPeriod) : qty;
+    }
+
+    const need = Math.max(0, Math.ceil(velocity * targetDays - (todayAvail || 0)));
+
+    rows.push({
+      clusterName,
+      offer,
+      sku,
+      prevAvail,
+      todayAvail,
+      delta,
+      qty,
+      revenue,
+      velocity,
+      need
+    });
+  }
+
+  // 1) из stocks B (Дата B)
+  for(const [offer, rec] of Object.entries(idxB)){
+    const sku = rec?.sku || '';
+    const clusters = rec?.clusters || {};
+    for(const [cid, c] of Object.entries(clusters)){
+      const cname = String(c?.cluster_name || '').trim();
+      const cnameN = normClusterName(cname);
+      const todayAvail = Number(c?.available || 0) || 0;
+      const adsC = Number(c?.ads_cluster || 0) || 0;
+
+      // prev
+      let prevAvail = 0;
+      try{
+        const pRec = idxA?.[offer];
+        const pC = pRec?.clusters?.[cid];
+        prevAvail = Number(pC?.available || 0) || 0;
+      }catch(e){ prevAvail = 0; }
+
+      const dem = (cnameN && demand?.[cnameN] && demand[cnameN][offer]) ? demand[cnameN][offer] : null;
+      pushRow(cname || ('cluster '+cid), offer, sku, prevAvail, todayAvail, adsC, dem);
+    }
+  }
+
+  // 2) если stocks нет, но есть спрос — добавим строки с нулевыми остатками (чтобы не терять аналитику)
+  for(const [clN, offers] of Object.entries(demand)){
+    for(const [offer, dem] of Object.entries(offers || {})){
+      // если уже есть строка по этому cluster+offer — пропускаем
+      const exists = rows.some(r => normClusterName(r.clusterName)===clN && r.offer===offer);
+      if(exists) continue;
+      pushRow(clN, offer, '', 0, 0, 0, dem);
+    }
+  }
+
+  // сорт: сначала need desc, потом revenue desc
+  rows.sort((a,b)=> (b.need - a.need) || (b.revenue - a.revenue));
+
+  // status
+  const tB = snapB ? (new Date(snapB.ts)).toLocaleString() : 'нет';
+  const tA = snapA ? (new Date(snapA.ts)).toLocaleString() : 'нет';
+  status.textContent = `Слепок B (UTC ${dayB}): ${tB}. Слепок A (UTC ${dayA}): ${tA}. Период спроса: ~${daysPeriod} дн.`;
+
+  function fmtRub(x){
+    const n = Number(x)||0;
+    return n.toLocaleString('ru-RU', {maximumFractionDigits:0});
+  }
+  function fmtNum(x){
+    const n = Number(x)||0;
+    return n.toLocaleString('ru-RU', {maximumFractionDigits:2});
+  }
+
+  for(const r of rows){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${r.clusterName}</td>
+      <td><code>${r.offer}</code></td>
+      <td>${r.sku ? `<code>${r.sku}</code>` : ''}</td>
+      <td>${fmtNum(r.prevAvail)}</td>
+      <td>${fmtNum(r.todayAvail)}</td>
+      <td>${fmtNum(r.delta)}</td>
+      <td>${fmtNum(r.qty)}</td>
+      <td>${fmtRub(r.revenue)}</td>
+      <td>${fmtNum(r.velocity)}</td>
+      <td><b>${fmtNum(r.need)}</b></td>
+    `;
+    tb.appendChild(tr);
+  }
+}
+
+// Вытаскиваем список SKU для слепка:
+// 1) если в localStorage есть список sku по товарам — используем его
+// 2) иначе — соберём sku из последних postings (product_id/sku в line, если есть)
+// 3) если пусто — попросим в статусе загрузить товары/цены
+function collectSkusForSnapshot(allPostings){
+  const out = new Set();
+
+  // 1) из localStorage (если где-то сохраняли)
+  try{
+    const raw = localStorage.getItem('ozon_skus_v1');
+    const arr = raw ? JSON.parse(raw) : null;
+    if(Array.isArray(arr)){
+      for(const x of arr) if(x!=null) out.add(String(x));
+    }
+  }catch(e){}
+
+  // 2) из заказов
+  try{
+    for(const p of (allPostings||[])){
+      const items = (typeof postingItems === 'function') ? (postingItems(p) || []) : (p?.products || p?.items || []);
+      for(const line of (items||[])){
+        const sku = line?.sku ?? line?.product_id ?? line?.productId ?? null;
+        if(sku!=null) out.add(String(sku));
+      }
+    }
+  }catch(e){}
+
+  return Array.from(out).filter(Boolean);
+}
+
+/* ===== /FBO_STOCK_SNAPSHOT_V1 ===== */
+
+
+
+    let stores = [];
+
+    function log(message, data) {
+      const entry = document.createElement('div');
+      entry.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${message}`;
+      if (data) entry.innerHTML += `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+      logBox.appendChild(entry);
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+    function escapeHtml(s){return String(s).replace(/[&<>"]/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));}
+
+    function setDefaultDates() {
+      const now = new Date();
+      const d2 = new Date(now);
+      const d1 = new Date(now); d1.setDate(d1.getDate() - 30);
+      dateTo.value = d2.toISOString().slice(0,10);
+      dateFrom.value = d1.toISOString().slice(0,10);
+    }
+
+    function initStoresUI() {
+      storeSelect.innerHTML = '';
+      const optAll = document.createElement('option');
+      optAll.value = 'all';
+      optAll.textContent = 'Все магазины';
+      storeSelect.appendChild(optAll);
+
+      stores.forEach((s, idx) => {
+        const o = document.createElement('option');
+        o.value = String(idx);
+        o.textContent = s.name || ('Магазин ' + (idx+1));
+        storeSelect.appendChild(o);
+      });
+    }
+
+    function renderTable(rows) {
+      if (!rows || !rows.length) {
+        tableWrap.innerHTML = '<div class="empty">Нет данных.</div>';
+        return;
+      }
+      const table = document.createElement('table');
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>offer_id</th>
+            <th class="right">FBO остаток</th>
+            <th class="right">FBS остаток</th>
+            <th class="right">Продано (шт)</th>
+            <th class="right">Выручка</th>
+            <th class="right">Скорость (шт/день)</th>
+            <th>Кластеры (топ)</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      `;
+      const tb = table.querySelector('tbody');
+      rows.forEach(r => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><span class="pill">${r.offer_id}</span></td>
+          <td class="right">${r.fbo_stock ?? '—'}</td>
+          <td class="right">${r.fbs_stock ?? '—'}</td>
+          <td class="right">${r.sold_qty ?? 0}</td>
+          <td class="right">${r.revenue ?? 0}</td>
+          <td class="right">${r.velocity ?? 0}</td>
+          <td>${r.top_clusters ?? '—'}</td>
+        `;
+        tb.appendChild(tr);
+      });
+      tableWrap.innerHTML = '';
+      tableWrap.appendChild(table);
+    }
+
+    async function boot() {
+  try {
+    if (typeof loadStoresFromLocalStorage === 'function') {
+      stores = loadStoresFromLocalStorage() || [];
+    } else if (Array.isArray(window.stores) && window.stores.length) {
+      stores = window.stores || [];
+    } else if (Array.isArray(window.OZON_STORES) && window.OZON_STORES.length) {
+      stores = window.OZON_STORES || [];
+    } else if (Array.isArray(window.ozonStores) && window.ozonStores.length) {
+      stores = window.ozonStores || [];
+    } else if (Array.isArray(window.OzonStores) && window.OzonStores.length) {
+      stores = window.OzonStores || [];
+    } else {
+      stores = [];
+    }
+  } catch(e) {
+    stores = [];
+  }
+
+  // совместимость для других страниц/функций
+  try { window.stores = stores; } catch(e) {}
+
+  initStoresUI();
+  setDefaultDates();
+
+  // если магазинов нет — покажем понятный текст в статусе
+  try {
+    if (!stores || !stores.length) {
+      statusText.textContent = 'Нет магазинов. Проверь stores.secrets.js и/или localStorage с магазинами.';
+    }
+  } catch(e) {}
+}
+
+    // WINDOW_ONERROR_V1
+try {
+  window.addEventListener('error', (ev) => {
+    try {
+      const msg = ev?.message || 'JS error';
+      const src = ev?.filename ? (ev.filename + ':' + (ev.lineno||0) + ':' + (ev.colno||0)) : '';
+      log('JS ERROR: ' + msg + (src ? ' @ ' + src : ''));
+    } catch(e) {}
+  });
+  window.addEventListener('unhandledrejection', (ev) => {
+    try {
+      const msg = (ev?.reason && (ev.reason.message || String(ev.reason))) || 'unhandledrejection';
+      log('PROMISE REJECTION: ' + msg);
+    } catch(e) {}
+  });
+} catch(e) {}
+// TODO: следующий шаг — реализовать загрузку:
+    // 1) FBO stocks per offer_id (+warehouse/cluster if есть)
+    // 2) sales/orders per offer_id per cluster_id (FBO + FBS)
+    // 3) supplies movements (из какого кластера в какой и сколько)
+
+    loadBtn.addEventListener('click', async () => {
+
+    // FBO_STOCK_SNAPSHOT_V1: после загрузки заказов обновим таблицу остатков/спроса (если есть слепки)
+    try {
+      const {store} = getSelectedStoreSafe();
+      const storeKey = String(store?.name ?? store?.title ?? store?.id ?? store?.clientId ?? store?.client_id ?? 'store0');
+      // allPostings должен быть в текущем scope обработчика; если нет — попробуем window.allPostings
+      const ap = (typeof allPostings !== 'undefined') ? allPostings : (window.allPostings || []);
+      renderStocksDeltaTable(storeKey, ap);
+    } catch(e) {}
+
+
+      const fromDay = dateFrom.value;
+      const toDay = dateTo.value;
+      const qOffer = String(offerFilter.value || '').trim();
+      if (!fromDay || !toDay) { statusText.textContent = 'Укажите период.'; return; }
+
+      statusText.textContent = 'Пока это каркас. Следующим шагом подключим API.';
+      summaryBadge.textContent = '';
+
+      // заглушка данных
+      renderTable(qOffer ? [{offer_id:qOffer, fbo_stock:'—', fbs_stock:'—', sold_qty:0, revenue:0, velocity:0, top_clusters:'—'}] : []);
+    });
+
+    boot();
+  // SNAP_DATES_AB_V1 init
+try {
+  const btn = document.getElementById('btnCompareSnaps');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      try {
+        const {store} = getSelectedStoreSafe();
+        const storeKey = String(store?.name ?? store?.title ?? store?.id ?? store?.clientId ?? store?.client_id ?? 'store0');
+        const {arr} = (typeof loadPostingsFromLS === 'function') ? (loadPostingsFromLS() || {arr:[]}) : ({arr:[]});
+        renderStocksDeltaTable(storeKey, arr || []);
+      } catch(e) {}
+    });
+  }
+
+  const selStore = document.getElementById('storeSelect');
+  if (selStore) {
+    selStore.addEventListener('change', () => {
+      try {
+        const {store} = getSelectedStoreSafe();
+        const storeKey = String(store?.name ?? store?.title ?? store?.id ?? store?.clientId ?? store?.client_id ?? 'store0');
+        fillSnapshotSelects(storeKey);
+        const {arr} = (typeof loadPostingsFromLS === 'function') ? (loadPostingsFromLS() || {arr:[]}) : ({arr:[]});
+        renderStocksDeltaTable(storeKey, arr || []);
+      } catch(e) {}
+    });
+  }
+
+  // первичное заполнение (чуть позже, чтобы stores точно успел появиться)
+  setTimeout(() => {
+    try {
+      const {store} = getSelectedStoreSafe();
+      const storeKey = String(store?.name ?? store?.title ?? store?.id ?? store?.clientId ?? store?.client_id ?? 'store0');
+      fillSnapshotSelects(storeKey);
+    } catch(e) {}
+  }, 0);
+} catch(e) {}
+// STORES_FORCE_FALLBACK_V1
+try {
+  setTimeout(() => {
+    try {
+      const s1 = (typeof stores !== 'undefined' && Array.isArray(stores)) ? stores : [];
+      const s2 = (Array.isArray(window.OZON_STORES) ? window.OZON_STORES : []);
+      if ((!s1 || !s1.length) && s2 && s2.length) {
+        stores = s2;
+        try { window.stores = stores; } catch(e) {}
+        try { initStoresUI(); } catch(e) {}
+        try {
+          const st = document.getElementById('statusText');
+          if (st) st.textContent = 'Магазины подхвачены из window.OZON_STORES.';
+        } catch(e) {}
+      }
+    } catch(e) {}
+  }, 0);
+} catch(e) {}
+</script>
+
+<!-- CLUSTER_ANALYTICS_FROM_LS_V1 -->
+<section class="card" id="clusterAnalyticsCard" style="margin-top:14px;">
+  <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+    <div>
+      <h2 style="margin:0 0 6px;">Кластера: откуда → куда</h2>
+<!-- FBO_STOCK_SNAPSHOT_V1_UI -->
+<div id="stocksDeltaBlock" style="margin:10px 0 18px; border:1px solid #e5e7eb; border-radius:8px; padding:10px;">
+  <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+    <div><b>Остатки по кластерам (FBO)</b></div>
+
+<!-- OFFER_CLUSTER_FREQ_V1 -->
+<div id="offerClusterFreqBlock" style="margin:10px 0 18px; border:1px solid #e5e7eb; border-radius:8px; padding:10px;">
+  <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+    <div><b>Частота заказов по кластерам (offer_id)</b></div>
+    <label style="margin-left:auto;">Топ строк:
+      <input id="freqTopN" type="number" step="1" min="10" value="200" style="width:90px;">
+    </label>
+    <label>Сортировка:
+      <select id="freqSort">
+        <option value="qty" selected>по кол-ву (qty)</option>
+        <option value="revenue">по сумме (revenue)</option>
+      </select>
+    </label>
+    <button id="btnRenderOfferClusterFreq" class="btn btn-primary" type="button">Построить</button>
+<button id="btnFetchPostingsApi" class="btn btn-primary" type="button">Загрузить заказы (API)</button>
+  </div>
+  <div style="margin-top:8px; font-size:12px; color:#6b7280;">
+    Источник: localStorage <code>ozon_last_postings_v1</code> (последняя загрузка заказов). Кластер назначения: <code>financial_data.cluster_to</code>.
+  </div>
+  <div id="offerClusterFreqStatus" style="margin-top:8px; color:#374151;"></div>
+  <div style="overflow:auto; margin-top:8px;">
+    <table id="offerClusterFreqTable" class="table table-sm" style="min-width:1100px; width:100%; border-collapse:collapse;">
+      <thead>
+        <tr>
+          <th>Кластер (куда)</th>
+          <th>offer_id</th>
+          <th style="text-align:right;">Заказов, шт</th>
+          <th style="text-align:right;">Сумма, ₽</th>
+          <th style="text-align:right;">Скорость, шт/день</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+<!-- /OFFER_CLUSTER_FREQ_V1 -->
+
+
+    <label style="margin-left:auto;">Целевой запас, дней:
+      <input id="targetDays" type="number" step="1" min="1" value="14" style="width:70px;">
+    </label>
+    <label>Скорость:
+      <select id="velocityMode">
+        <option value="orders" selected>из заказов за период</option>
+        <option value="ads_cluster">ads_cluster (28 дней)</option>
+      </select>
+<span style="margin-left:8px; font-size:12px; color:#6b7280;">Слепки:</span>
+<label style="display:flex; align-items:center; gap:6px;">
+  Дата A (UTC):
+  <select id="snapDayA" style="min-width:120px;"></select>
+</label>
+<label style="display:flex; align-items:center; gap:6px;">
+  Дата B (UTC):
+  <select id="snapDayB" style="min-width:120px;"></select>
+</label>
+<button id="btnCompareSnaps" class="btn btn-primary" type="button" style="margin-left:6px;">Сравнить</button>
+<!-- SNAP_DATES_AB_V1 -->
+
+    </label>
+  </div>
+  <div style="margin-top:8px; font-size:12px; color:#6b7280;">
+    Слепки сохраняются в localStorage. «Вчера/сегодня» — по датам UTC (обновление Ozon около 07:00 UTC).
+  </div>
+  <div id="stocksDeltaStatus" style="margin-top:8px; color:#374151;"></div>
+  <div style="overflow:auto; margin-top:8px;">
+    <table id="stocksDeltaTable" class="table table-sm" style="min-width:1100px; width:100%; border-collapse:collapse;">
+      <thead>
+        <tr>
+          <th>Кластер</th>
+          <th>Артикул</th>
+          <th>SKU</th>
+          <th>Остаток вчера</th>
+          <th>Остаток сегодня</th>
+          <th>Δ</th>
+          <th>Заказов, шт</th>
+          <th>Сумма заказов, ₽</th>
+          <th>Скорость, шт/день</th>
+          <th>Рекомендация довезти, шт</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+      <div class="muted" style="font-size:13px;">
+        Источник: <code>financial_data.cluster_from</code> / <code>financial_data.cluster_to</code>.
+        Данные берутся из последней загрузки заказов на странице “Заказы”.
+      </div>
+    </div>
+    <div style="display:flex; gap:10px; align-items:center;">
+      <button id="btnReloadClusters" class="btn btn-primary" type="button">Обновить</button>
+      <span id="clustersTs" class="muted" style="font-size:12px;"></span>
+    </div>
+  </div>
+
+  <div style="margin-top:12px; display:grid; grid-template-columns: 1fr 1fr; gap:14px;" id="clusterGrid">
+    <div>
+      <h3 style="margin:6px 0;">FBO</h3>
+      <div id="clusterFboTable"></div>
+    </div>
+    <div>
+      <h3 style="margin:6px 0;">FBS</h3>
+      <div id="clusterFbsTable"></div>
+    </div>
+  </div>
+</section>
+
+<style>
+  @media (max-width: 1100px) {
+  }
+</style>
+
+<script>
+(function(){
+  function escHtml(s){
+    const t = String(s ?? '');
+    return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function fmtRub(x){
+    try {
+      const n = Number(x||0);
+      return n.toLocaleString('ru-RU', { style:'currency', currency:'RUB', maximumFractionDigits:0 });
+    } catch(e){ return String(x||0); }
+  }
+
+  function getClusterFromPosting(p){
+    try {
+      return (
+        p?.cluster_from ??
+        p?.clusterFrom ??
+        p?.financial_data?.cluster_from ??
+        p?.financialData?.cluster_from ??
+        p?.financial_data?.clusterFrom ??
+        p?.financialData?.clusterFrom ??
+        null
+      );
+    } catch(e){ return null; }
+  }
+  function getClusterToPosting(p){
+    try {
+      return (
+        p?.cluster_to ??
+        p?.clusterTo ??
+        p?.financial_data?.cluster_to ??
+        p?.financialData?.cluster_to ??
+        p?.financial_data?.clusterTo ??
+        p?.financialData?.clusterTo ??
+        null
+      );
+    } catch(e){ return null; }
+  }
+
+  function sumPostingQtyAndRevenue(p){
+    try {
+      const items = (p?.products || p?.items || []);
+      let qty=0, rev=0;
+      for(const it of items){
+        const q = Number(it?.quantity ?? it?.count ?? 1) || 1;
+        const price = Number(it?.price ?? it?.sale_price ?? it?.selling_price ?? it?.item_price ?? it?.product_price ?? 0) || 0;
+        qty += q;
+        rev += price*q;
+      }
+      return {qty, rev};
+    } catch(e){ return {qty:0, rev:0}; }
+  }
+
+  function buildClusterAgg(allPostings, schemaNeed){
+  // Строим маршруты "откуда → куда" по postings.
+  // Для FBO cluster_from часто пустой => ставим 'fbo', destination берём из cluster_to.
+  const out = {}; // route -> {shipments, qty, revenue}
+  const postings = allPostings || [];
+  const need = String(schemaNeed || '').toUpperCase();
+
+  for(const p of postings){
+    const schema = String(p?._schema ?? p?.schema ?? '').toUpperCase();
+    if(need && schema !== need) continue;
+
+    const ad = p?.analytics_data || p?.analyticsData || null;
+    const fd = p?.financial_data  || p?.financialData  || null;
+
+    let from = (
+      fd?.cluster_from ?? fd?.clusterFrom ??
+      ad?.cluster_from ?? ad?.clusterFrom ??
+      p?.cluster_from  ?? p?.clusterFrom  ??
+      ''
+    );
+    let to = (
+      fd?.cluster_to ?? fd?.clusterTo ??
+      ad?.cluster_to ?? ad?.clusterTo ??
+      p?.cluster_to  ?? p?.clusterTo  ??
+      ''
+    );
+
+    from = String(from || '').trim();
+    to   = String(to   || '').trim();
+
+    if(schema === 'FBO' && !from) from = 'fbo';
+    if(!to) continue;
+
+    const items = (typeof postingItems === 'function')
+      ? (postingItems(p) || [])
+      : (p?.products || p?.items || []);
+
+    let qty = 0;
+    let revenue = 0;
+
+    for(const line of (items || [])){
+      const q = Number(line?.quantity ?? line?.qty ?? line?.count ?? 0) || 0;
+      if(!q) continue;
+
+      const totalLine = Number(line?.total_price ?? line?.totalPrice ?? line?.total ?? 0) || 0;
+      const unitPrice = Number(
+        line?.price ??
+        line?.selling_price ??
+        line?.unit_price ??
+        line?.unitPrice ??
+        line?.item_price ??
+        line?.product_price ??
+        0
+      ) || 0;
+
+      let rev = 0;
+      if(totalLine) rev = totalLine;
+      else if(unitPrice) rev = unitPrice * q;
+
+      qty += q;
+      revenue += rev;
+    }
+
+    const route = `${normClusterName(from)} → ${normClusterName(to)}`;
+    if(!out[route]) out[route] = {shipments: 0, qty: 0, revenue: 0};
+    out[route].shipments += 1;
+    out[route].qty += qty;
+    out[route].revenue += revenue;
+  }
+
+  return out;
+}
+/* FIX_BUILDCLUSTERAGG_V3 */
+
+
+)();
+</script>
+<!-- /CLUSTER_ANALYTICS_FROM_LS_V1 -->
+
+<script>
+/* ===== CHARTS_RENDER_V1 ===== */
+
+function isoDayUTC(d){
+  try{
+    const dt = (d instanceof Date) ? d : new Date(String(d||''));
+    if(!isFinite(dt)) return '';
+    const y = dt.getUTCFullYear();
+    const m = String(dt.getUTCMonth()+1).padStart(2,'0');
+    const dd = String(dt.getUTCDate()).padStart(2,'0');
+    return `${y}-${m}-${dd}`;
+  }catch(e){ return ''; }
+}
+
+function sumLineRevenueQty(line){
+  const qty = Number(line?.quantity ?? line?.qty ?? line?.count ?? 0) || 0;
+  if(!qty) return {qty:0, rev:0};
+
+  const totalLine = Number(line?.total_price ?? line?.totalPrice ?? line?.total ?? 0) || 0;
+  const unitPrice = Number(
+    line?.price ??
+    line?.selling_price ??
+    line?.unit_price ??
+    line?.unitPrice ??
+    line?.item_price ??
+    line?.product_price ??
+    0
+  ) || 0;
+
+  let rev = 0;
+  if(totalLine) rev = totalLine;
+  else if(unitPrice) rev = unitPrice * qty;
+
+  return {qty, rev};
+}
+
+function aggByDay(postings){
+  // returns {days: [...], fboQty:[], fboRev:[], fbsQty:[], fbsRev:[]}
+  const mp = new Map(); // day -> {FBO:{q,r}, FBS:{q,r}}
+  for(const p of (postings||[])){
+    const schema = String(p?._schema ?? p?.schema ?? '').toUpperCase() || 'FBO';
+    const dtStr = p?.created_at ?? p?.createdAt ?? p?.in_process_at ?? p?.inProcessAt ?? '';
+    const day = isoDayUTC(dtStr);
+    if(!day) continue;
+
+    const items = (typeof postingItems === 'function')
+      ? (postingItems(p) || [])
+      : (p?.products || p?.items || []);
+
+    let q=0, r=0;
+    for(const line of (items||[])){
+      const x = sumLineRevenueQty(line);
+      q += (x.qty||0);
+      r += (x.rev||0);
+    }
+
+    const cur = mp.get(day) || {FBO:{q:0,r:0}, FBS:{q:0,r:0}};
+    if(schema === 'FBS'){
+      cur.FBS.q += q; cur.FBS.r += r;
+    }else{
+      cur.FBO.q += q; cur.FBO.r += r;
+    }
+    mp.set(day, cur);
+  }
+  
+  const days = Array.from(mp.keys()).sort();
+  const fboQty=[], fboRev=[], fbsQty=[], fbsRev=[];
+  for(const d of days){
+    const v = mp.get(d) || {};
+    const a = v.FBO || {q:0,r:0};
+    const b = v.FBS || {q:0,r:0};
+    fboQty.push(a.q||0); fboRev.push(a.r||0);
+    fbsQty.push(b.q||0); fbsRev.push(b.r||0);
+  }
+  return {days, fboQty, fboRev, fbsQty, fbsRev};
+
+}
+
+let __chartDays = null;
+let __chartClusters = null;
+
+function aggByClusterTo(postings, topN){
+  const mp = new Map(); // cluster -> {qty, rev}
+  for(const p of (postings||[])){
+    const fd = p?.financial_data || p?.financialData || null;
+    const clTo = (fd?.cluster_to ?? fd?.clusterTo ?? p?.cluster_to ?? p?.clusterTo ?? '').toString().trim();
+    const cl = (clTo || '—').toLowerCase();
+
+    const items = (typeof postingItems === 'function')
+      ? (postingItems(p) || [])
+      : (p?.products || p?.items || []);
+
+    let q=0, r=0;
+    for(const line of (items||[])){
+      const x = sumLineRevenueQty(line);
+      q += (x.qty||0);
+      r += (x.rev||0);
+    }
+
+    const cur = mp.get(cl) || {qty:0, rev:0};
+    cur.qty += q; cur.rev += r;
+    mp.set(cl, cur);
+  }
+
+  const rows = Array.from(mp.entries()).map(([cluster, v])=>({cluster, qty:v.qty||0, rev:v.rev||0}));
+  rows.sort((a,b)=> (b.rev-a.rev) || (b.qty-a.qty));
+  const out = rows.slice(0, Math.max(10, Number(topN||20)||20));
+  return out;
+}
+
+function readPostingsFromLS(){
+  try{
+    const raw = localStorage.getItem("ozon_last_postings_v1");
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  }catch(e){ return []; }
+}
+
+function renderCharts(){
+  if(typeof Chart === 'undefined') return;
+
+  const postings = readPostingsFromLS();
+  if(!postings.length) return;
+
+  // --- chart 1: by days ---
+  const c1 = document.getElementById('chartSalesByDays');
+  if(c1){
+    const a = aggByDay(postings);
+    if(a){
+      if(__chartDays) { try{ __chartDays.destroy(); }catch(e){} }
+      __chartDays = new Chart(c1, {
+        type: 'line',
+        data: {
+          labels: a.days,
+          datasets: [
+            { label: 'FBO qty', data: a.fboQty, yAxisID: 'yQty' },
+            { label: 'FBS qty', data: a.fbsQty, yAxisID: 'yQty' },
+            { label: 'FBO revenue', data: a.fboRev, yAxisID: 'yRev' },
+            { label: 'FBS revenue', data: a.fbsRev, yAxisID: 'yRev' }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          scales: {
+            yQty: { type: 'linear', position: 'left', title: { display: true, text: 'шт' } },
+            yRev: { type: 'linear', position: 'right', title: { display: true, text: '₽' }, grid: { drawOnChartArea: false } }
+          }
+        }
+      });
+    }
+  }
+
+  // --- chart 2: by clusters (bar) ---
+  const c2 = document.getElementById('chartSalesByClusters');
+  if(c2){
+    const rows = aggByClusterTo(postings, 20);
+    const labels = rows.map(r=>r.cluster);
+    const data = rows.map(r=>r.rev);
+
+    if(__chartClusters) { try{ __chartClusters.destroy(); }catch(e){} }
+    __chartClusters = new Chart(c2, {
+      type: 'bar',
+      data: { labels, datasets: [ { label: 'revenue, ₽', data } ] },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { ticks: { maxRotation: 60, minRotation: 30 } },
+          y: { title: { display: true, text: '₽' } }
+        }
+      }
+    });
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  // при открытии страницы попробуем отрисовать из уже сохранённых postings
+  try { renderCharts(); } catch(e){}
+});
+
+// после загрузки postings по кнопке — дорисуем графики тоже
+try{
+  const _old = window.fetchPostingsByDatesAndSave;
+  if(typeof _old === 'function'){
+    window.fetchPostingsByDatesAndSave = async function(store, logFn){
+      const r = await _old(store, logFn);
+      try { renderCharts(); } catch(e){}
+      return r;
+    };
+  }
+}catch(e){}
+
+/* ===== /CHARTS_RENDER_V1 ===== */
+
+</script>
+<script src="stores_runtime.js"></script>
+<script src="nav.js"></script>
+<script src="stores.secrets.js"></script>
+<script src="ozon_storage.js"></script>
+<script src="nav.js"></script>
+<script src="table_sort.js"></script>
+<script src="ozon_prices_detach_patch.js"></script>
+</body>
+</html>

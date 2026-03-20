@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Планирование FBO — OZON</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    .controls { gap:10px; align-items:center; flex-wrap:wrap; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:8px 10px; border-bottom:1px solid rgba(0,0,0,.08); vertical-align:top; }
+    th { text-align:left; white-space:nowrap; }
+    .muted { opacity:.75; }
+    .right { text-align:right; }
+    .table-wrap{ overflow:auto; }
+    .log { max-height:240px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:rgba(47,129,247,.12); border:1px solid rgba(47,129,247,.25); }
+    input[type="number"]{ width:110px; }
+  </style>
+
+  <script src="stores.secrets.js"></script>
+  <script src="stores_runtime.js"></script>
+  <script src="clusters_list.js"></script>
+  <script src="ozon_date_range.js"></script>
+  <script src="ozon_api_patch.js"></script>
+  <script src="ozon_server_cache.js"></script>
+  <script src="ozon_api.js"></script>
+
+<script src="/ozon_orders_accruals_patch.js?v=2026-02-05_065103"></script>
+<script src="/ozon_costprice_patch.js?v=2026-02-05_065103"></script>
+</head>
+<body>
+<header>
+  <div class="title">Планирование FBO</div>
+  <nav class="nav"></nav>
+</header>
+
+<div class="controls" style="padding:0 20px 12px;">
+  <select id="loadStore"></select>
+
+  <label class="muted">Период продаж:
+    <input type="date" id="dateFrom" class="date-input" />
+    <input type="date" id="dateTo" class="date-input" />
+  </label>
+
+  <label class="muted">Спрос учитывать:
+    <select id="demandMode">
+      <option value="ALL" selected>FBO + FBS</option>
+      <option value="FBO">только FBO</option>
+      <option value="FBS">только FBS</option>
+    </select>
+  </label>
+
+  <label class="muted">Кластер (спрос по cluster_to):
+    <select id="planCluster" class="filter-input" style="min-width:260px;"></select>
+  </label>
+
+  <label class="muted">Горизонт, дней:
+    <input type="number" id="horizonDays" min="1" step="1" value="14" />
+  </label>
+
+  <button id="btnLoad" class="btn btn-primary">Загрузить</button>
+  <button id="btnCsvRec" class="btn">CSV (рекомендации)</button>
+</div>
+
+<main>
+  <section class="card" aria-live="polite">
+    <h2>Статус</h2>
+    <div id="statusText">Выберите период и нажмите “Загрузить”.</div>
+    <div class="muted" style="margin-top:6px;">
+      Спрос: по <code>cluster_to</code> (FBO/FBS). Остаток по кластеру: вычитаем продажи FBO по <code>cluster_from</code> (из этого кластера).
+      Фактический остаток FBO по API — общий по складам; без маппинга “склад→кластер” точное распределение по кластерам недоступно.
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Лог</h2>
+    <div class="log" id="logBox"></div>
+  </section>
+
+  <section class="card">
+    <h2>Уходимость по товарам из актов (кластер поставки)</h2>
+    <div class="table-wrap" id="actsSpeedWrap"></div>
+  </section>
+
+  <section class="card">
+    <h2>Рекомендации на поставку FBO</h2>
+    <div class="table-wrap" id="recoWrap"></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const LS_ACTS_KEY = 'ozon_fbo_acceptance_v1';
+
+  const elStatus = document.getElementById('statusText');
+  const elLog = document.getElementById('logBox');
+
+  const loadStore = document.getElementById('loadStore');
+  const dateFrom = document.getElementById('dateFrom');
+  const dateTo = document.getElementById('dateTo');
+  const demandMode = document.getElementById('demandMode');
+  const planCluster = document.getElementById('planCluster');
+  const horizonDays = document.getElementById('horizonDays');
+
+  const actsSpeedWrap = document.getElementById('actsSpeedWrap');
+  const recoWrap = document.getElementById('recoWrap');
+
+  // in-memory cache, чтобы при смене кластера не ждать API
+  let POSTINGS_CACHE = { key:'', postings:[] };
+
+  function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
+  function log(m){
+    const div = document.createElement('div');
+    div.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${esc(m)}`;
+    elLog.appendChild(div);
+    elLog.scrollTop = elLog.scrollHeight;
+  }
+  function setStatus(m){ elStatus.textContent = m; }
+
+  function fmtNum(x, fd=2){
+    const n = Number(x||0) || 0;
+    return n.toLocaleString('ru-RU', { maximumFractionDigits: fd });
+  }
+
+  function loadActs(){
+    try{
+      const raw = localStorage.getItem(LS_ACTS_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    }catch(e){ return []; }
+  }
+
+  function authHeaders(st){
+    return {
+      'Client-Id': String(st.client_id),
+      'Api-Key': String(st.api_key),
+      'Content-Type': 'application/json'
+    };
+  }
+
+  async function postJson(url, headers, body){
+    const r = await fetch(url, { method:'POST', headers, body: JSON.stringify(body) });
+    const t = await r.text();
+    let j=null; try{ j = t ? JSON.parse(t) : null; }catch(e){ j=null; }
+    if(!r.ok){
+      const msg = (j && (j.message || j.error)) ? (j.message || j.error) : (t || ('HTTP ' + r.status));
+      throw new Error(msg);
+    }
+    return j;
+  }
+
+  function ymdUTC(dt){
+    const d = (dt instanceof Date) ? dt : new Date(dt);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth()+1).padStart(2,'0');
+    const dd = String(d.getUTCDate()).padStart(2,'0');
+    return `${y}-${m}-${dd}`;
+  }
+
+  function listDays(fromYmd, toYmd){
+    const out = [];
+    const a = new Date(fromYmd + 'T00:00:00.000Z');
+    const b = new Date(toYmd + 'T00:00:00.000Z');
+    if(!isFinite(a) || !isFinite(b)) return out;
+    let cur = new Date(a.getTime());
+    for(let i=0;i<800;i++){
+      const k = ymdUTC(cur);
+      out.push(k);
+      if(k === toYmd) break;
+      cur.setUTCDate(cur.getUTCDate()+1);
+    }
+    return out;
+  }
+
+  function daysBetweenInclusive(a, b){
+    try{
+      const d1 = new Date(a);
+      const d2 = new Date(b);
+      const x = Date.UTC(d1.getFullYear(), d1.getMonth(), d1.getDate());
+      const y = Date.UTC(d2.getFullYear(), d2.getMonth(), d2.getDate());
+      const n = Math.floor((y-x)/86400000) + 1;
+      return n > 0 ? n : 1;
+    }catch(e){ return 1; }
+  }
+
+  function getClusterTo(p){
+    const fd = p?.financial_data || p?.financialData || null;
+    const ad = p?.analytics_data || p?.analyticsData || null;
+    return String(
+      fd?.cluster_to ?? fd?.clusterTo ??
+      ad?.cluster_to ?? ad?.clusterTo ??
+      p?.cluster_to ?? p?.clusterTo ?? ''
+    ).trim();
+  }
+  function getClusterFrom(p){
+    const fd = p?.financial_data || p?.financialData || null;
+    const ad = p?.analytics_data || p?.analyticsData || null;
+    return String(
+      fd?.cluster_from ?? fd?.clusterFrom ??
+      ad?.cluster_from ?? ad?.clusterFrom ??
+      p?.cluster_from ?? p?.clusterFrom ?? ''
+    ).trim();
+  }
+
+  function getItems(p){
+    return (p?.products || p?.items || p?.result?.products || []);
+  }
+
+  function getOfferId(line){
+    const v = line?.offer_id ?? line?.offerId ?? line?.offerID ?? line?.offer ?? '';
+    return String(v ?? '').trim();
+  }
+
+  function lineQty(line){
+    return Number(line?.quantity ?? line?.qty ?? line?.count ?? 0) || 0;
+  }
+
+  function parseSaleDay(p){
+    const dt = p?.created_at || p?.in_process_at || p?.shipment_date || '';
+    const s = String(dt||'');
+    return s.length >= 10 ? s.slice(0,10) : '';
+  }
+
+  async function fetchFboDay(st, sinceISO, toISO){
+    const url = 'https://api-seller.ozon.ru/v2/posting/fbo/list';
+    const hdr = authHeaders(st);
+
+    const out = [];
+    const limit = 1000;
+    let offset = 0;
+
+    for(let iter=0; iter<200; iter++){
+      const body = {
+        dir: "ASC",
+        filter: { since: sinceISO, to: toISO },
+        limit, offset,
+        with: { analytics_data:true, financial_data:true, legal_info:true }
+      };
+
+      const j = await postJson(url, hdr, body);
+
+      const r = j?.result;
+      const items = Array.isArray(r) ? r : (r?.postings || r?.items || j?.postings || j?.items || []);
+      for(const p of (items || [])){
+        p._schema = 'FBO';
+        p._storeName = st.name;
+        out.push(p);
+      }
+
+      if(!items || !items.length) break;
+      if(items.length < limit) break;
+      offset += limit;
+    }
+    return out;
+  }
+
+  async function fetchFbsDay(st, sinceISO, toISO){
+    const url = 'https://api-seller.ozon.ru/v3/posting/fbs/list';
+    const hdr = authHeaders(st);
+
+    const out = [];
+    const limit = 1000;
+    let offset = 0;
+
+    for(let iter=0; iter<200; iter++){
+      const body = {
+        dir: "ASC",
+        filter: { since: sinceISO, to: toISO },
+        limit, offset,
+        with: { analytics_data:true, financial_data:true }
+      };
+
+      const j = await postJson(url, hdr, body);
+
+      const r = j?.result;
+      const items = Array.isArray(r) ? r : (r?.postings || r?.items || j?.postings || j?.items || []);
+      for(const p of (items || [])){
+        p._schema = 'FBS';
+        p._storeName = st.name;
+        out.push(p);
+      }
+
+      if(!items || !items.length) break;
+      if(items.length < limit) break;
+      offset += limit;
+    }
+    return out;
+  }
+
+  function buildSalesIndex(postings, allowedMode, clusterSelector){
+    // key=cluster||offer -> {sold_fbo, sold_fbs, sold_all, days:Map(day->{fbo,fbs,all})}
+    const idx = new Map();
+    for(const p of (postings||[])){
+      const schema = String(p?._schema||'').toUpperCase();
+      if(allowedMode !== 'ALL' && schema !== allowedMode) continue;
+
+      const cluster = String(clusterSelector(p) || '—').trim() || '—';
+      const day = parseSaleDay(p) || '';
+
+      const items = getItems(p) || [];
+      for(const line of items){
+        const offer = getOfferId(line);
+        if(!offer) continue;
+        const q = lineQty(line);
+        if(!q) continue;
+
+        const k = cluster + '||' + offer;
+        const cur = idx.get(k) || {cluster, offer_id: offer, sold_fbo:0, sold_fbs:0, sold_all:0, days:new Map()};
+
+        if(schema === 'FBO') cur.sold_fbo += q;
+        if(schema === 'FBS') cur.sold_fbs += q;
+        cur.sold_all += q;
+
+        if(day){
+          const d = cur.days.get(day) || {fbo:0,fbs:0,all:0};
+          if(schema === 'FBO') d.fbo += q;
+          if(schema === 'FBS') d.fbs += q;
+          d.all += q;
+          cur.days.set(day, d);
+        }
+
+        idx.set(k, cur);
+      }
+    }
+    return idx;
+  }
+
+  function actsAggForCluster(cluster){
+    const acts = loadActs().filter(a => String(a.supply_cluster||'').trim() === cluster);
+    const mp = new Map(); // offer -> {accepted, min_date}
+    for(const a of acts){
+      const ad = String(a.accept_date||'').trim();
+      for(const r of (a.lines||[])){
+        const offer = String(r.offer_id||'').trim();
+        const q = Number(r.accepted_qty||0) || 0;
+        if(!offer || !q) continue;
+        const cur = mp.get(offer) || {offer_id:offer, accepted:0, min_date:ad || '9999-12-31'};
+        cur.accepted += q;
+        if(ad && ad < cur.min_date) cur.min_date = ad;
+        mp.set(offer, cur);
+      }
+    }
+    return mp;
+  }
+
+  function renderActsSpeed(rows){
+    if(!rows.length){ actsSpeedWrap.innerHTML = '<div class="muted">Нет данных (нет актов по выбранному кластеру).</div>'; return; }
+    const t = document.createElement('table');
+    t.innerHTML = `
+      <thead>
+        <tr>
+          <th>offer_id</th>
+          <th class="right">Принято (акт), шт</th>
+          <th class="right">Продано FBO (из кластера, после приёмки), шт</th>
+          <th class="right">Остаток FBO (оценка), шт</th>
+          <th class="right">Дней</th>
+          <th class="right">Скорость, шт/день</th>
+          <th class="right">Расп. %, FBO</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+    const tb = t.querySelector('tbody');
+    for(const r of rows){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><code>${esc(r.offer_id)}</code></td>
+        <td class="right">${esc(r.accepted)}</td>
+        <td class="right">${esc(r.sold_fbo_after)}</td>
+        <td class="right">${esc(r.stock_est)}</td>
+        <td class="right">${esc(r.days_in_stock)}</td>
+        <td class="right">${esc(fmtNum(r.vel_fbo,3))}</td>
+        <td class="right">${esc(fmtNum(r.sell_pct,1))}%</td>
+      `;
+      tb.appendChild(tr);
+    }
+    actsSpeedWrap.innerHTML = '';
+    actsSpeedWrap.appendChild(t);
+  }
+
+  function renderReco(rows){
+    if(!rows.length){ recoWrap.innerHTML = '<div class="muted">Нет рекомендаций (спрос = 0).</div>'; return; }
+    const t = document.createElement('table');
+    t.innerHTML = `
+      <thead>
+        <tr>
+          <th>offer_id</th>
+          <th class="right">Спрос (ALL), шт</th>
+          <th class="right">Спрос FBO, шт</th>
+          <th class="right">Спрос FBS, шт</th>
+          <th class="right">Скорость (ALL), шт/день</th>
+          <th class="right">Остаток FBO (оценка), шт</th>
+          <th class="right">Нужно довезти, шт</th>
+          <th>В актах</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+    const tb = t.querySelector('tbody');
+    for(const r of rows){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><code>${esc(r.offer_id)}</code></td>
+        <td class="right">${esc(r.demand_all)}</td>
+        <td class="right">${esc(r.demand_fbo)}</td>
+        <td class="right">${esc(r.demand_fbs)}</td>
+        <td class="right">${esc(fmtNum(r.demand_rate,3))}</td>
+        <td class="right">${esc(r.stock_est)}</td>
+        <td class="right"><strong>${esc(r.need)}</strong></td>
+        <td>${r.in_acts ? '<span class="pill">да</span>' : '<span class="muted">нет</span>'}</td>
+      `;
+      tb.appendChild(tr);
+    }
+    recoWrap.innerHTML = '';
+    recoWrap.appendChild(t);
+  }
+
+  function downloadRecoCsv(rows, cluster, fromDay, toDay, horizon, mode){
+    const escCsv = (v) => {
+      const s = String(v ?? '');
+      return /[",;\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+    };
+    const hdr = 'cluster;period_from;period_to;horizon_days;demand_mode;offer_id;demand_all;demand_fbo;demand_fbs;demand_rate;stock_est;need;in_acts\n';
+    const lines = rows.map(r => [
+      cluster, fromDay, toDay, horizon, mode,
+      r.offer_id, r.demand_all, r.demand_fbo, r.demand_fbs, r.demand_rate, r.stock_est, r.need, r.in_acts ? '1':'0'
+    ].map(escCsv).join(';'));
+    const blob = new Blob([hdr + lines.join('\n')], {type:'text/csv;charset=utf-8;'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `fbo_recommendations_${cluster}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 0);
+  }
+
+  function rebuildStoresUI(){
+    const stores = (window.ozonLoadStores ? window.ozonLoadStores() : []) || [];
+    loadStore.innerHTML = '';
+    const o0 = document.createElement('option');
+    o0.value = '__all__';
+    o0.textContent = 'Загрузить: все магазины';
+    loadStore.appendChild(o0);
+
+    for(const st of stores){
+      const o = document.createElement('option');
+      o.value = st.client_id;
+      o.textContent = 'Загрузить: ' + st.name;
+      loadStore.appendChild(o);
+    }
+  }
+
+  function rebuildClustersUI(){
+    const clusters = (window.ozonLoadClusters ? window.ozonLoadClusters() : []) || [];
+    planCluster.innerHTML = '';
+    const o0 = document.createElement('option');
+    o0.value = '';
+    o0.textContent = clusters.length ? 'Выберите кластер…' : 'Нет кластеров (загрузите заказы, либо обновите clusters_list.js)';
+    planCluster.appendChild(o0);
+    for(const c of clusters){
+      const o = document.createElement('option');
+      o.value = c;
+      o.textContent = c;
+      planCluster.appendChild(o);
+    }
+  }
+
+  function pickStoresToLoad(){
+    const stores = (window.ozonLoadStores ? window.ozonLoadStores() : []) || [];
+    const v = String(loadStore.value || '__all__');
+    if(v === '__all__') return stores;
+    return stores.filter(s => String(s.client_id) === v);
+  }
+
+  function setDefaultDates(){
+    const now = new Date();
+    const d2 = new Date(now);
+    const d1 = new Date(now); d1.setDate(d1.getDate() - 30);
+    dateTo.value = d2.toISOString().slice(0,10);
+    dateFrom.value = d1.toISOString().slice(0,10);
+  }
+
+  async function mainLoad(){
+    elLog.innerHTML = '';
+    actsSpeedWrap.innerHTML = '';
+    recoWrap.innerHTML = '';
+
+    const stores = pickStoresToLoad();
+    if(!stores.length){
+      setStatus('Нет магазинов. Откройте “Магазины”.');
+      log('Нет магазинов для загрузки.');
+      return;
+    }
+
+    const fromDay = String(dateFrom.value||'').trim();
+    const toDay   = String(dateTo.value||'').trim();
+    if(!fromDay || !toDay){ setStatus('Укажите период.'); return; }
+
+    const cluster = String(planCluster.value||'').trim();
+    if(!cluster){ setStatus('Выберите кластер.'); return; }
+
+    const mode = String(demandMode.value||'ALL');
+    const horizon = Math.max(1, Number(horizonDays.value||14)||14);
+
+    const days = listDays(fromDay, toDay);
+    const periodDays = daysBetweenInclusive(fromDay, toDay);
+
+    // какие схемы реально надо тянуть:
+    const needFbo = true; // остаток/оценка по кластеру считаем по FBO
+    const needFbs = (mode === 'ALL' || mode === 'FBS');
+
+    const cacheKey = JSON.stringify({
+      stores: stores.map(s=>String(s.client_id)).sort(),
+      fromDay, toDay, needFbo, needFbs
+    });
+
+    let postings = [];
+    if(POSTINGS_CACHE.key === cacheKey && POSTINGS_CACHE.postings.length){
+      postings = POSTINGS_CACHE.postings;
+      log(`КЭШ: postings=${postings.length} (период/магазины те же) — API не вызываю`);
+    } else {
+      setStatus('Загружаю postings из Ozon API…');
+      log(`Магазинов: ${stores.length}. Период: ${fromDay} → ${toDay}. Спрос: ${mode}. Кластер: ${cluster}. Горизонт: ${horizon} дн.`);
+      postings = [];
+
+      for(const st of stores){
+        log(`Магазин: ${st.name}`);
+        for(let i=0;i<days.length;i++){
+          const day = days[i];
+          const sinceISO = day + "T00:00:00.000Z";
+          const toISO    = day + "T23:59:59.999Z";
+          log(`[${st.name}] ${day} (${i+1}/${days.length})…`);
+
+          try{
+            if(needFbo){
+              const fbo = await fetchFboDay(st, sinceISO, toISO);
+              log(`  FBO: ${fbo.length}`);
+              postings.push(...fbo);
+            }
+            if(needFbs){
+              const fbs = await fetchFbsDay(st, sinceISO, toISO);
+              log(`  FBS: ${fbs.length}`);
+              postings.push(...fbs);
+            }
+          }catch(e){
+            log('  ERROR: ' + (e?.message || String(e)));
+          }
+        }
+      }
+      POSTINGS_CACHE = { key: cacheKey, postings };
+    }
+
+    // запоминаем кластеры, чтобы выпадалка жила “от факта”
+    try{
+      const seen = [];
+      for(const p of postings){
+        const ct = getClusterTo(p); if(ct) seen.push(ct);
+        const cf = getClusterFrom(p); if(cf) seen.push(cf);
+      }
+      if(window.ozonRememberClusters) window.ozonRememberClusters(seen);
+    }catch(e){}
+    rebuildClustersUI();
+
+    // индекс спроса по cluster_to
+    const salesToIdx = buildSalesIndex(postings, mode, getClusterTo);
+    // индекс расхода FBO "из кластера" (cluster_from), только FBO
+    const salesFromIdx = buildSalesIndex(postings, 'FBO', getClusterFrom);
+
+    // агрегируем акты по выбранному кластеру (если есть)
+    const actsAgg = actsAggForCluster(cluster); // offer -> {accepted, min_date}
+
+    // уходимость по актам: принял в кластер -> продал FBO ИЗ этого кластера после даты приёмки
+    const speedRows = [];
+    for(const [offer, a] of actsAgg.entries()){
+      const k = cluster + '||' + offer;
+      const sales = salesFromIdx.get(k) || {days:new Map(), sold_fbo:0};
+
+      const minDate = (a.min_date && a.min_date !== '9999-12-31') ? a.min_date : fromDay;
+
+      let soldFboAfter = 0;
+      let lastSaleDay = minDate;
+      for(const [d, q] of sales.days.entries()){
+        if(d < minDate) continue;
+        soldFboAfter += (q.fbo || 0);
+        if((q.fbo||0) > 0 && d > lastSaleDay) lastSaleDay = d;
+      }
+
+      const stockEst = Math.max(0, a.accepted - soldFboAfter);
+      const daysInStock = daysBetweenInclusive(minDate, Math.max(lastSaleDay, toDay));
+      const velFbo = daysInStock ? (soldFboAfter / daysInStock) : soldFboAfter;
+      const sellPct = a.accepted ? (Math.min(1, soldFboAfter / a.accepted) * 100) : 0;
+
+      speedRows.push({
+        offer_id: offer,
+        accepted: a.accepted,
+        sold_fbo_after: soldFboAfter,
+        stock_est: stockEst,
+        days_in_stock: daysInStock,
+        vel_fbo: velFbo,
+        sell_pct: sellPct
+      });
+    }
+    speedRows.sort((x,y)=> (y.sell_pct - x.sell_pct) || (y.vel_fbo - x.vel_fbo));
+    renderActsSpeed(speedRows);
+
+    // рекомендации: все offer, которые продавались в cluster_to=cluster + те, что есть в актах
+    const allOffers = new Set();
+    for(const [k,v] of salesToIdx.entries()){
+      if(v.cluster === cluster) allOffers.add(v.offer_id);
+    }
+    for(const offer of actsAgg.keys()) allOffers.add(offer);
+
+    const recoRows = [];
+    for(const offer of allOffers){
+      const kTo = cluster + '||' + offer;
+      const sTo = salesToIdx.get(kTo) || {sold_all:0, sold_fbo:0, sold_fbs:0};
+
+      const demandAll = sTo.sold_all || 0;
+      const demandFbo = sTo.sold_fbo || 0;
+      const demandFbs = sTo.sold_fbs || 0;
+
+      const demandRate = periodDays ? (demandAll / periodDays) : demandAll;
+
+      const a = actsAgg.get(offer);
+      const inActs = !!a;
+
+      let stockEst = 0;
+      if(inActs){
+        const minDate = (a.min_date && a.min_date !== '9999-12-31') ? a.min_date : fromDay;
+        let soldFboAfter = 0;
+        const sFrom = salesFromIdx.get(cluster + '||' + offer) || {days:new Map()};
+        for(const [d, q] of sFrom.days.entries()){
+          if(d < minDate) continue;
+          soldFboAfter += (q.fbo || 0);
+        }
+        stockEst = Math.max(0, a.accepted - soldFboAfter);
+      }
+
+      const target = demandRate * horizon;
+      const need = Math.max(0, Math.ceil(target - stockEst));
+
+      if(need > 0 || inActs){
+        recoRows.push({
+          offer_id: offer,
+          demand_all: demandAll,
+          demand_fbo: demandFbo,
+          demand_fbs: demandFbs,
+          demand_rate: demandRate,
+          stock_est: stockEst,
+          need,
+          in_acts: inActs
+        });
+      }
+    }
+    recoRows.sort((a,b)=> (b.need - a.need) || (b.demand_rate - a.demand_rate));
+    renderReco(recoRows);
+
+    setStatus(`Готово. Postings: ${postings.length}. Рекомендаций: ${recoRows.length}.`);
+    window.__RECO_CACHE__ = {rows: recoRows, cluster, fromDay, toDay, horizon, mode};
+  }
+
+  document.getElementById('btnLoad').addEventListener('click', async () => {
+    try{ await mainLoad(); }
+    catch(e){
+      log('Ошибка: ' + (e?.message || String(e)));
+      setStatus('Ошибка: ' + (e?.message || String(e)));
+    }
+  });
+
+  // Пересчёт без API при смене кластера (используем кэш)
+  planCluster.addEventListener('change', () => {
+    if(POSTINGS_CACHE.postings && POSTINGS_CACHE.postings.length){
+      document.getElementById('btnLoad').click();
+    }
+  });
+
+  document.getElementById('btnCsvRec').addEventListener('click', () => {
+    const c = window.__RECO_CACHE__;
+    if(!c || !c.rows || !c.rows.length){ alert('Нет рекомендаций. Сначала “Загрузить”.'); return; }
+    downloadRecoCsv(c.rows, c.cluster, c.fromDay, c.toDay, c.horizon, c.mode);
+  });
+
+  function boot(){
+    setDefaultDates();
+    rebuildStoresUI();
+    rebuildClustersUI();
+  }
+  boot();
+})();
+</script>
+
+<script src="nav.js"></script>
+<script src="table_sort.js"></script>
+<script src="ozon_prices_detach_patch.js"></script>
+<script src="fbo_planning_xlsx_patch.js"></script>
+</body>
+</html>

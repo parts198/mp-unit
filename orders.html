@@ -1,0 +1,1828 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<!-- METRICS_REINDEX_V2 -->
+<!-- ENSURE_PRICECARD_ON_LINES_V1 -->
+<!-- COST_FROM_PRICECARD_NETPRICE_V1 -->
+<!-- METRICS_ALIAS_INDEX_V1 -->
+<!-- METRIC_LOOKUP_STRIP_LEADING_ZEROS_V1 -->
+<!-- SAVE_LAST_POSTINGS_TO_LS_V1 -->
+<!-- MENU_ANALYTICS_LINK_V1 -->
+<!-- CLUSTER_ANALYTICS_V2 -->
+<!-- DEBUG_LAST_POSTINGS_V1 -->
+<!-- GETOFFERMETRICSMAP_KEYHINT_V1 -->
+<!-- COSTPRICE_FALLBACK_NETPRICE_V2 -->
+<!-- RESET_POSTING_ROW_CACHE_V1 -->
+<!-- FIX_POSTING_MARKUP_LG_V1 -->
+    <meta charset="UTF-8" />
+  <title>Заказы OZON</title>
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    .status-row { justify-content: space-between; }
+    .table-wrapper { overflow-x: auto; }
+    .order-details-row { display: none; background: rgba(47, 129, 247, 0.08); }
+    .order-details-row.open { display: table-row; }
+    .mini-table th,
+    .mini-table td { padding: 6px 8px; }
+    .mini-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+    .mini-table th, .mini-table td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mini-table th { text-align: left; }
+
+    .controls { gap: 10px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    .chart-frame { background: #0d1117; border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+  </style>
+
+  <style>
+    /* ===== ORDERS_FORECAST_HOURLY_LAYOUT_V1 ===== */
+    .forecast-grid {
+      display: flex;
+      gap: 12px;
+      align-items: stretch;
+      flex-wrap: wrap;
+      margin: 12px 0;
+    }
+    .forecast-grid > .forecast-left {
+      flex: 1 1 420px;
+      min-width: 320px;
+    }
+    .forecast-grid > .forecast-right {
+      flex: 1 1 520px;
+      min-width: 320px;
+    }
+    .forecast-right .chart-frame {
+      height: 320px;
+    }
+    /* ===== /ORDERS_FORECAST_HOURLY_LAYOUT_V1 ===== */
+  </style>
+
+  <script src="clusters_runtime.js"></script>
+  <script src="clusters_list.js"></script>
+  <script src="ozon_date_range.js"></script>
+  <script src="ozon_api_patch.js"></script>
+  <script src="ozon_fetch.js?v=2026-01-26_081741"></script>
+  <script src="ozon_server_cache.js"></script>
+  <script src="ozon_api.js"></script>
+
+<script src="/ozon_orders_accruals_patch.js?v=2026-02-05_065103"></script>
+<script src="/ozon_costprice_patch.js?v=2026-02-05_065103"></script>
+</head>
+<body>
+  <header>
+    <div class="title">Заказы OZON</div>
+    <nav class="nav"></nav>
+  </header>
+  <div class="controls" style="padding: 0 20px 12px;">
+    <select id="storeSelect"></select>
+    <input type="date" id="dateFrom" class="date-input" />
+    <input type="date" id="dateTo" class="date-input" />
+    <select id="schemeFilter">
+      <option value="ALL">Все схемы</option>
+      <option value="FBS">FBS</option>
+      <option value="FBO">FBO</option>
+    </select>
+    <input id="offerFilter" class="filter-input" type="search" placeholder="Фильтр по offer_id" />
+    <button id="loadBtn">Загрузить заказы</button>
+  </div>
+
+  <main>
+    <section class="card" aria-live="polite">
+      <h2>Статус</h2>
+      <div class="status-row">
+        <span id="statusText">Выберите магазин и нажмите «Загрузить заказы»</span>
+        <span class="badge" id="ordersSummary"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      
+      <div class="forecast-grid">
+  <div class="forecast-left">
+<div id="forecastSummary" class="summary" style="margin:12px 0; padding:10px; border:1px solid #e5e7eb; border-radius:10px; background:#fff;">
+        <b>Расходы (прогноз)</b>
+        <div class="muted" style="margin-top:6px;">Загрузите заказы, чтобы увидеть итоги по расходам.</div>
+  </div>
+<!-- ===== ORDERS_HOURLY_CHART_V1 (HTML) ===== -->
+    <div id="hourlyCard" class="forecast-right">
+      <h2>Заказы по часам (0–23)</h2>
+      <div class="chart-frame">
+        <canvas id="hourlyChart" height="260"></canvas>
+
+
+      </div>
+
+<!-- clusters moved to fbo_supplies.html -->
+
+
+      <div class="muted" id="hourlyChartHint" style="margin-top:8px;">
+        Гистограмма строится по времени created_at (если нет — in_process_at / shipment_date / order_created_at).
+      </div>
+    </div>
+<!-- ===== /ORDERS_HOURLY_CHART_V1 (HTML) ===== -->
+</div>
+      </div>
+<h2>Заказы</h2>
+      <div id="ordersTableWrapper"></div>
+    
+
+    
+    
+</section>
+
+    <section class="card">
+      <h2>Лог запросов к OZON</h2>
+      <div class="log" id="logBox"></div>
+    </section>
+  </main>
+
+  
+    <script src="stores.secrets.js?v=2"></script>
+  <script src="scripts/ozon-core.js?v=19"></script>
+  <script>
+    const logBox = document.getElementById('logBox');
+    const statusText = document.getElementById('statusText');
+    const ordersSummary = document.getElementById('ordersSummary');
+    const ordersTableWrapper = document.getElementById('ordersTableWrapper');
+    const storeSelect = document.getElementById('storeSelect');
+    const dateFrom = document.getElementById('dateFrom');
+    const dateTo = document.getElementById('dateTo');
+    const schemeFilter = document.getElementById('schemeFilter');
+    const offerFilter = document.getElementById('offerFilter');
+    const loadBtn = document.getElementById('loadBtn');
+
+    let stores = [];
+
+    function log(message, data) {
+      const entry = document.createElement('div');
+      entry.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${message}`;
+      if (data) {
+        const details = document.createElement('details');
+        details.innerHTML = `<summary>Детали</summary><pre>${JSON.stringify(data, null, 2)}</pre>`;
+        entry.appendChild(details);
+      }
+      logBox.prepend(entry);
+    }
+
+    function isoDayStart(d) { return `${d}T00:00:00Z`; }
+    function isoDayEnd(d) { return `${d}T23:59:59Z`; }
+
+    function setDefaultDates() {
+      const to = new Date();
+      const from = new Date(Date.now() - 27 * 24 * 60 * 60 * 1000);
+      dateFrom.value = from.toISOString().slice(0, 10);
+      dateTo.value = to.toISOString().slice(0, 10);
+    }
+
+    function populateStores() {
+      storeSelect.innerHTML = '';
+      const optAll = document.createElement('option');
+      optAll.value = 'all';
+      optAll.textContent = 'Все магазины';
+      storeSelect.appendChild(optAll);
+
+      stores.forEach((s, idx) => {
+        const opt = document.createElement('option');
+        opt.value = String(idx);
+        opt.textContent = s.name || `Store ${s.client_id}`;
+        storeSelect.appendChild(opt);
+      });
+      storeSelect.value = 'all';
+    }
+
+    async function apiCall(store, path, body) {
+      return await window.OzonCore.postJson('https://api-seller.ozon.ru' + path, body, {
+        'Client-Id': store.client_id,
+        'Api-Key': store.api_key,
+      });
+    }
+
+    async function fetchPostingsPaged(store, path, schema, sinceIso, toIso) {
+      const limit = 1000;
+      let offset = 0;
+      let out = [];
+      for (let guard = 0; guard < 500; guard++) {
+        const body = {
+          filter: { since: sinceIso, to: toIso },
+          limit,
+          offset,
+          with: { analytics_data: true, financial_data: true, products: true }
+        };
+        const data = await apiCall(store, path, body);
+          const res = data?.result || data || {};
+          const list = res?.postings || res?.items || res || [];
+
+        out = out.concat(list.map((p) => ({ ...p, _schema: schema, _store: store.name || store.client_id })));
+        const total = Number(data?.result?.total || data?.total || 0);
+        offset += limit;
+        if (!total || offset >= total || list.length < limit) break;
+      }
+      return out;
+    }
+
+    async function fetchPostingsForStore(store, fromDay, toDay) {
+      const chunks = window.OzonCore.splitDateRange(fromDay, toDay, 7); // safe chunk size for time limits
+      const combined = [];
+      for (const ch of chunks) {
+        const sinceIso = isoDayStart(ch.from);
+        const toIso = isoDayEnd(ch.to);
+        log(`${store.name}: период ${ch.from}…${ch.to}`);
+        const scheme = schemeFilter.value;
+        if (scheme === 'ALL' || scheme === 'FBS') {
+          const fbs = await fetchPostingsPaged(store, '/v3/posting/fbs/list', 'FBS', sinceIso, toIso);
+          combined.push(...fbs);
+        }
+        if (scheme === 'ALL' || scheme === 'FBO') {
+          const fbo = await fetchPostingsPaged(store, '/v2/posting/fbo/list', 'FBO', sinceIso, toIso);
+          
+          try { log('DEBUG FBO count=' + ((fbo && fbo.length) ? fbo.length : 0)); } catch(e) {}
+            combined.push(...fbo);
+        }
+      }
+      // Deduplicate by posting number
+      const map = new Map();
+      combined.forEach((p) => {
+        const key = p.posting_number || p.order_id || JSON.stringify([p._schema, p._store, p.created_at]);
+        map.set(key, p);
+      });
+      return Array.from(map.values());
+    }
+function bestOfferId(x) {
+  // Возвращаем ПОЛНЫЙ offer_id (никаких slice/substr)
+  try {
+    if (!x) return '';
+    // если это строка
+    if (typeof x === 'string' || typeof x === 'number') return String(x).trim();
+
+    // прямые поля
+    const direct =
+      x.offer_id ?? x.offerId ?? x.offerID ??
+      x?.offer?.offer_id ?? x?.offer?.id ??
+      x.sku ?? x.sku_id ?? x.skuId ??
+      x.article ?? x.artikul ?? x.articul;
+
+    if (direct != null) {
+      const s = String(direct).trim();
+      if (s) return s;
+    }
+
+    // если прилетел объект с items/products/posting_items — берём первый
+    const it =
+      (Array.isArray(x.items) && x.items[0]) || (Array.isArray(x.products) && x.products[0]) || (Array.isArray(x.posting_items) && x.posting_items[0]) || null
+        if (it) {
+      const v = it.offer_id ?? it.offerId ?? it.offerID ?? it.sku ?? it.article ?? it.artikul ?? it.articul;
+      const ss = String(v || '').trim();
+      if (ss) return ss;
+    }
+    return '';
+  } catch (e) {
+    return '';
+  }
+}
+
+
+
+
+
+    
+      
+      function postingItems(p) {
+        // 1) товары из posting
+        const candidates = [
+          p.products,
+          p.items,
+          p.posting?.products,
+          p.posting?.items,
+          p.data?.products,
+          p.data?.items,
+        ].filter(Boolean);
+
+        let arr = [];
+        for (const c of candidates) {
+          if (Array.isArray(c)) { arr = c; break; }
+          if (c && Array.isArray(c.items)) { arr = c.items; break; }
+          if (c && Array.isArray(c.products)) { arr = c.products; break; }
+        }
+
+        // 2) финансы из posting.financial_data
+        const fin = p.financial_data || p.financialData || {};
+        const finProducts =
+          (Array.isArray(fin.products) ? fin.products : []) ||
+          (Array.isArray(fin.items) ? fin.items : []);
+
+        const finByPid = new Map();
+        for (const fp of finProducts) {
+          const pid = String(fp.product_id ?? fp.productId ?? fp.id ?? '');
+          if (pid) finByPid.set(pid, fp);
+        }
+
+        // 3) join по product_id (fallback: по индексу)
+        return mergePricesIntoItems((arr || []).map((it, idx) => {
+          const offer_id = bestOfferId(it);
+
+const product_id = String(
+            it.product_id ?? it.productId ?? it.product?.id ?? it.product?.product_id ?? ''
+          );
+
+          const name = it.name || it.product_name || it.productName || it.title || '';
+          const quantity = Number(it.quantity ?? it.qty ?? it.count ?? it.amount ?? 0) || 0;
+
+          let fp = (product_id && finByPid.get(product_id)) || null;
+          if (!fp && finProducts[idx]) fp = finProducts[idx]; // fallback по позиции
+
+          const price = fp?.price ?? fp?.item_price ?? it.price ?? it.item_price ?? null;
+          const customer_price = fp?.customer_price ?? fp?.customerPrice ?? null;
+          const old_price = fp?.old_price ?? fp?.oldPrice ?? null;
+          const payout = fp?.payout ?? null;
+          const commission_amount = fp?.commission_amount ?? fp?.commissionAmount ?? null;
+          const total_discount_value = fp?.total_discount_value ?? fp?.totalDiscountValue ?? null;
+
+          return {
+            offer_id: String(offer_id || ''),
+            product_id,
+            name,
+            quantity,
+            fin: fp || null,
+            price,
+            customer_price,
+            old_price,
+            payout,
+            commission_amount,
+            total_discount_value,
+            raw: it
+          };
+        }), window.__PRICES_BY_OFFER__ || new Map()).filter(x => x.offer_id || x.name || x.product_id);
+      }
+
+        function getPostingPrice(posting) {
+          const items = postingItems(posting) || [];
+          let sum = 0;
+          for (const line of items) {
+            const qty = Math.max(1, asNum(line?.quantity ?? line?.count ?? 1, 1));
+            const price = getPriceForLine(line);
+            sum += asNum(price) * qty;
+          }
+          return sum;
+        }
+
+
+      function rub(x) {
+        const n = Number(x);
+        if (!Number.isFinite(n)) return '—';
+        return n.toLocaleString('ru-RU') + ' ₽';
+      }
+
+      function n0(x) {
+        const n = Number(x);
+        return Number.isFinite(n) ? n : 0;
+      }
+
+      async function fetchPricesByOfferIds(store, offerIds) {
+        // /v5/product/info/prices (как в dashboard.html)
+        const uniq = Array.from(new Set((offerIds || []).map(x => String(x || '').trim()).filter(Boolean)));
+        const chunkSize = 1000;
+
+        const map = new Map();
+
+        for (let i = 0; i < uniq.length; i += chunkSize) {
+          const chunk = uniq.slice(i, i + chunkSize);
+
+          const body = {
+            cursor: '',
+            filter: { offer_id: chunk, visibility: 'ALL' },
+            limit: chunk.length
+          };
+
+          const data = await apiCall(store, '/v5/product/info/prices', body);
+
+          const items = Array.isArray(data?.items) ? data.items
+                     : Array.isArray(data?.result?.items) ? data.result.items
+                     : [];
+
+          for (const it of items) {
+            const id = String(it.offer_id || it.offerId || '').trim();
+            if (!id) continue;
+
+            // В v5 цены внутри it.price (объект)
+            const pr = (it && typeof it.price === 'object' && it.price) ? it.price : (it?.raw?.price || {});
+            const your = pr?.marketing_seller_price ?? pr?.marketingSellerPrice ?? null;
+            const cur  = pr?.price ?? pr?.current_price ?? pr?.currentPrice ?? null;
+
+            const rec = {
+              offer_id: id,
+
+              // для отображения
+              yourPrice: your,
+              currentPrice: cur,
+              oldPrice: pr?.old_price ?? pr?.oldPrice ?? null,
+              marketingPrice: pr?.marketing_seller_price ?? pr?.marketingSellerPrice ?? null,
+              minPrice: pr?.min_price ?? pr?.minPrice ?? null,
+
+              // для расчётов расходов
+              commissions: it.commissions || null,
+              current_tariff: it.current_tariff || null,
+
+              raw: it
+            };
+            map.set(id, rec);
+            const idZ = id.replace(/^0+/, '');
+            if (idZ && idZ !== id) map.set(idZ, rec);
+          }
+        }
+
+        return map;
+      }
+
+
+
+
+      function mergePricesIntoItems(items, pricesMap) {
+        if (!pricesMap || !items) return items || [];
+        return (items || []).map(it => {
+          const k = String(bestOfferId(it) || it.offer_id || '').trim();
+          const kZ = k.replace(/^0+/, '');
+          const p = k ? (pricesMap.get(k) || (kZ && pricesMap.get(kZ)) || null) : null;
+          return { ...it, priceCard: p };
+        });
+      }
+
+
+
+
+      let __OZON_METRICS_CACHE = null;
+
+
+
+
+
+      function getOfferMetricsMap(x) {
+
+  if (__OZON_METRICS_CACHE !== null) return __OZON_METRICS_CACHE;
+
+  let parsed = null;
+  try {
+    const raw = localStorage.getItem('ozon_offer_metrics_v1');
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    parsed = null;
+  }
+
+  const map = {};
+
+  const put = (key, rec) => {
+    const k = String(key || '').trim();
+    if (!k) return;
+    map[k] = rec || {};
+    const k2 = k.replace(/^0+/, '');
+    if (k2 && k2 !== k && map[k2] == null) map[k2] = rec || {};
+  };
+
+  const ingestRec = (rec, keyHint) => {
+    if (!rec || typeof rec !== 'object') return;
+    const key = rec.offer_id ?? rec.offerId ?? rec.offerid ?? rec.sku ?? rec.id ?? rec.article ?? rec.artikul ?? rec.vendor_code ?? rec.vendorCode ?? keyHint;
+    put(key, rec);
+  };
+
+  if (Array.isArray(parsed)) {
+    for (const rec of parsed) ingestRec(rec);
+  } else if (parsed && typeof parsed === 'object') {
+    if (Array.isArray(parsed.items)) {
+      for (const rec of parsed.items) ingestRec(rec);
+    } else if (Array.isArray(parsed.data)) {
+      for (const rec of parsed.data) ingestRec(rec);
+    } else {
+      // либо уже словарь {offerId: rec}, либо смешанная структура
+      for (const [k, v] of Object.entries(parsed)) {
+        if (v && typeof v === 'object' && (v.offer_id || v.offerId || v.sku || v.id || v.article || v.artikul)) {
+          ingestRec(v);
+        } else {
+          put(k, v);
+        }
+
+        function resetOfferMetricsCache() {
+          __OZON_METRICS_CACHE = null;
+        }
+      }
+    }
+  }
+
+  __OZON_METRICS_CACHE = map;
+  return __OZON_METRICS_CACHE;
+
+
+
+
+
+      }
+
+
+
+
+      
+      
+/* ===== METRICS_ALIAS_INDEX_V1 ===== */
+let __OZON_METRICS_ALIAS_MAP = null;
+
+function __normMetricKey(x) {
+  const t = String(x ?? '').trim();
+  if (!t) return '';
+  // убираем пробелы, сохраняем регистр как есть + сделаем алиасы позже
+  const n = t.replace(/\s+/g, '');
+  return n;
+}
+
+function getOfferMetricsAliasMap() {
+  if (__OZON_METRICS_ALIAS_MAP !== null) return __OZON_METRICS_ALIAS_MAP;
+
+  const mp = (typeof getOfferMetricsMap === 'function') ? (getOfferMetricsMap() || {}) : {};
+  const alias = {};
+
+  function put(k, rec) {
+    try {
+      const kk = __normMetricKey(k);
+      if (!kk) return;
+      if (!alias[kk]) alias[kk] = rec;
+
+      // алиас без ведущих нулей
+      const no0 = kk.replace(/^0+/, '');
+      if (no0 && no0 !== kk && !alias[no0]) alias[no0] = rec;
+
+      // алиасы по регистру
+      const up = kk.toUpperCase();
+      const low = kk.toLowerCase();
+      if (up && !alias[up]) alias[up] = rec;
+      if (low && !alias[low]) alias[low] = rec;
+    } catch(e) {}
+  }
+
+  for (const [k, rec] of Object.entries(mp)) {
+    if (!rec || typeof rec !== 'object') continue;
+
+    // ключ словаря
+    put(k, rec);
+
+    // возможные поля идентификаторов внутри записи
+    put(rec.offer_id, rec);
+    put(rec.offerId, rec);
+    put(rec.offerid, rec);
+    put(rec.sku, rec);
+    put(rec.id, rec);
+    put(rec.article, rec);
+    put(rec.artikul, rec);
+    put(rec.vendor_code, rec);
+    put(rec.vendorCode, rec);
+  }
+
+  __OZON_METRICS_ALIAS_MAP = alias;
+  return __OZON_METRICS_ALIAS_MAP;
+}
+/* ===== /METRICS_ALIAS_INDEX_V1 ===== */
+
+
+/* ===== METRICS_REINDEX_V2 ===== */
+let __OZON_METRICS_BY_ORDER_OFFERID = null;   // ключ = offer_id как в заказе (в т.ч. с ведущими нулями)
+let __OZON_METRICS_BY_ANY_KEY = null;         // ключ = offer_id/sku/article/vendor_code из метрики + алиасы
+
+function __normKey(x) {
+  const t = String(x ?? '').trim();
+  if (!t) return '';
+  return t.replace(/\s+/g, '');
+}
+
+function __put(mp, k, rec) {
+  try {
+    const kk = __normKey(k);
+    if (!kk) return;
+    if (!mp[kk]) mp[kk] = rec;
+
+    const no0 = kk.replace(/^0+/, '');
+    if (no0 && no0 !== kk && !mp[no0]) mp[no0] = rec;
+
+    const up = kk.toUpperCase();
+    const low = kk.toLowerCase();
+    if (up && !mp[up]) mp[up] = rec;
+    if (low && !mp[low]) mp[low] = rec;
+  } catch(e) {}
+}
+
+function resetOfferMetricsCache() {
+  try { __OZON_METRICS_CACHE = null; } catch(e) {}
+  __OZON_METRICS_BY_ORDER_OFFERID = null;
+  __OZON_METRICS_BY_ANY_KEY = null;
+}
+
+function getMetricsIndexV2() {
+  if (__OZON_METRICS_BY_ORDER_OFFERID && __OZON_METRICS_BY_ANY_KEY) {
+    return {byOrder: __OZON_METRICS_BY_ORDER_OFFERID, byAny: __OZON_METRICS_BY_ANY_KEY};
+  }
+
+  const base = (typeof getOfferMetricsMap === 'function') ? (getOfferMetricsMap() || {}) : {};
+  const byAny = {};
+  const byOrder = {};
+
+  for (const [k, rec] of Object.entries(base)) {
+    if (!rec || typeof rec !== 'object') continue;
+
+    // 1) индекс "как в метриках": любые поля идентификаторов
+    __put(byAny, k, rec);
+    __put(byAny, rec.offer_id, rec);
+    __put(byAny, rec.offerId, rec);
+    __put(byAny, rec.offerid, rec);
+    __put(byAny, rec.sku, rec);
+    __put(byAny, rec.id, rec);
+    __put(byAny, rec.article, rec);
+    __put(byAny, rec.artikul, rec);
+    __put(byAny, rec.vendor_code, rec);
+    __put(byAny, rec.vendorCode, rec);
+
+    // 2) индекс "как в заказах":
+    // ВАЖНО: если в метрике есть поле orderOfferId / order_offer_id — используем его.
+    // Если нет — оставим как есть (byOrder будет неполный, зато byAny покроет).
+    __put(byOrder, rec.order_offer_id, rec);
+    __put(byOrder, rec.orderOfferId, rec);
+  }
+
+  __OZON_METRICS_BY_ORDER_OFFERID = byOrder;
+  __OZON_METRICS_BY_ANY_KEY = byAny;
+  return {byOrder, byAny};
+}
+/* ===== /METRICS_REINDEX_V2 ===== */
+
+function metricByOfferId(offer_id) {
+        const m = getOfferMetricsMap();
+        const raw = String(offer_id || '').trim();
+        if (!raw) return null;
+
+        // 1) прямой ключ
+        if (m[raw]) return m[raw];
+
+        // 2) нормализация пробелов/служебных
+        const norm = raw.replace(/\s+/g, '').trim();
+        
+        // METRIC_LOOKUP_STRIP_LEADING_ZEROS_V1: ключ без ведущих нулей
+        const no0 = norm.replace(/^0+/, '');
+        if (no0 && m[no0]) return m[no0];
+if (m[norm]) return m[norm];
+
+        // 3) регистр
+        const up = norm.toUpperCase();
+        if (m[up]) return m[up];
+        const low = norm.toLowerCase();
+        if (m[low]) return m[low];
+
+        
+        // METRICS_ALIAS_INDEX_V1: fallback — ищем по алиасам (offer_id/sku/article/vendor_code и т.д.)
+        try {
+          const a = getOfferMetricsAliasMap() || {};
+          if (a[norm]) return a[norm];
+          const no0 = norm.replace(/^0+/, '');
+          if (no0 && a[no0]) return a[no0];
+          const up = norm.toUpperCase();
+          const low = norm.toLowerCase();
+          if (a[up]) return a[up];
+          if (a[low]) return a[low];
+        } catch(e) {}
+
+        // METRICS_REINDEX_V2: fallback через индексы
+        try {
+          const idx2 = getMetricsIndexV2();
+          const byOrder = idx2?.byOrder || {};
+          const byAny = idx2?.byAny || {};
+
+          if (byOrder[raw]) return byOrder[raw];
+          if (byOrder[norm]) return byOrder[norm];
+          const no0 = norm.replace(/^0+/, '');
+          if (no0 && byOrder[no0]) return byOrder[no0];
+
+          const up2 = norm.toUpperCase();
+          const low2 = norm.toLowerCase();
+          if (byOrder[up2]) return byOrder[up2];
+          if (byOrder[low2]) return byOrder[low2];
+
+          if (byAny[raw]) return byAny[raw];
+          if (byAny[norm]) return byAny[norm];
+          if (no0 && byAny[no0]) return byAny[no0];
+          if (byAny[up2]) return byAny[up2];
+          if (byAny[low2]) return byAny[low2];
+        } catch(e) {}
+return null;
+      }
+
+      
+/* ===== COST_FROM_PRICECARD_NETPRICE_V1 ===== */
+function getLineNetCost(line) {
+  try {
+    const pc = line?.priceCard || line?.price_card || null;
+    let v = pc?.net_price ?? pc?.netPrice ?? pc?.netprice ?? 0;
+    if (typeof v === 'string') v = v.replace(',', '.').trim();
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  } catch(e) { return 0; }
+}
+/* ===== /COST_FROM_PRICECARD_NETPRICE_V1 ===== */
+
+function pct(x) {
+        const n = Number(x);
+        if (!Number.isFinite(n)) return '—';
+        return n.toFixed(2) + '%';
+      }
+
+      function calcMarkupPctFromMetric(m) {
+        if (!m) return null;
+
+        // 1) если в метрике уже есть markupPct — используем
+        const direct = Number(m.markupPct);
+        if (Number.isFinite(direct)) return direct;
+
+        // 2) fallback: считаем как в "Ценах" от себестоимости
+        const price = Number(m.price);
+        const cost = Number(m.costPrice);
+        if (Number.isFinite(price) && Number.isFinite(cost) && cost > 0) {
+          return (price - cost) / cost * 100;
+        }
+
+        return null;
+      }
+
+
+
+      function firstOfferId(p) {
+        const items = postingItems(p);
+        return items && items.length ? (items[0].offer_id || '') : '';
+      }
+
+      function postingQty(p) {
+        const items = postingItems(p);
+        return (items || []).reduce((s, it) => s + (Number(it.quantity ?? it.qty ?? 0) || 0), 0);
+      }
+
+      function isDeliveredStatus(p) {
+        const st = String(p.status || p.state || '').toLowerCase();
+        return st === 'delivered' || st === 'delivered_to_customer';
+      }
+
+      function postingPriceForRow(p) {
+  // Цена в верхней таблице: сумма по товарам (после мерджа priceCard) + кеш
+  if (p && Object.prototype.hasOwnProperty.call(p, '__postingPriceCached')) return p.__postingPriceCached;
+
+  const sum = getPostingPrice(p);
+  let val = 0;
+  if (Number.isFinite(sum) && sum > 0) val = sum;
+  else val = asNum(p?.financial_data?.products ?? p?.financial_data?.product_price ?? p?.price ?? 0);
+
+  if (p) p.__postingPriceCached = val;
+  return val;
+
+      }
+
+
+
+
+      function postingMarkupPct(p) {
+  // Наценка по отправлению (верхняя таблица): (net - cost)/cost, где
+  // net = price - commission - acquiring - promotion - logistics - delivery - firstMile - packaging
+  if (p && Object.prototype.hasOwnProperty.call(p, '__postingMarkupCached')) return p.__postingMarkupCached;
+
+  const schema = String(p?._schema || (typeof schemaOfPosting === 'function' ? schemaOfPosting(p) : '') || '').toUpperCase() || 'FBS';
+  const items = p?._filteredItems || (typeof postingItems === 'function' ? postingItems(p) : []) || [];
+
+  let netSum = 0;
+  let costSum = 0;
+
+  for (const it of items) {
+    const qty = Math.max(1, asNum(it?.quantity ?? it?.count ?? 1, 1));
+    const pc = it?.priceCard || null;
+    const price = getPriceForLine(it);
+
+    const commissionPercent = getCommissionPercentFromPriceCard(pc, schema);
+    const logisticsCalc = getLogisticsCostFromPriceCard(pc, schema, price, p._store);
+
+    const cm = (pc && (pc.commissions || pc.raw?.commissions || pc.raw?.price?.commissions)) || {};
+    const fm = (schema === 'FBS')
+      ? asNum(cm.fbs_first_mile_max_amount ?? cm.fbs_first_mile_amount ?? cm.first_mile_amount ?? 0)
+      : asNum(cm.fbo_first_mile_amount ?? cm.fbo_first_mile_max_amount ?? cm.first_mile_amount ?? 0);
+    const dlv = (schema === 'FBS')
+      ? asNum(cm.fbs_deliv_to_customer_amount ?? cm.fbs_deliv_to_customer_max_amount ?? cm.delivery_to_customer_amount ?? 0)
+      : asNum(cm.fbo_deliv_to_customer_amount ?? cm.fbo_deliv_to_customer_max_amount ?? cm.delivery_to_customer_amount ?? cm.delivery_amount ?? 0);
+    const lg = asNum(logisticsCalc);
+    const packaging = getPackagingForLine(it, schema);
+const m = computeFbsForecastForLine({
+      price,
+      commissionPercent,
+      firstMile: fm,
+      logistics: lg,
+      delivery: dlv,
+      packaging
+    });
+
+    const net = asNum(price) - (
+      asNum(m?.commissionAmount) +
+      asNum(m?.acquiring) +
+      asNum(m?.promotion) +
+      asNum(fm) + asNum(lg) + asNum(dlv) + asNum(packaging)
+    );
+
+    const cost = getLineCostPrice(it);
+    
+      // net для наценки: цена минус все расходы (как на странице «Цены»)
+      const netForMarkup = asNum(price) - (
+        asNum(m?.commissionAmount) +
+        asNum(m?.acquiring) +
+        asNum(m?.promotion) +
+        asNum(fm) + asNum(lg) + asNum(dlv) + asNum(packaging)
+      );
+if (!(Number.isFinite(cost) && cost > 0)) continue;
+
+    netSum  += net  * qty;
+    costSum += cost * qty;
+  }
+
+  const res = (Number.isFinite(costSum) && costSum > 0)
+    ? ((netSum - costSum) / costSum * 100)
+    : null;
+
+  if (p) p.__postingMarkupCached = res;
+  return res;
+
+
+
+
+      }
+
+
+
+function sumPosting(p) {
+        const items = postingItems(p);
+        const sums = {
+          items: items.length,
+          qty: items.reduce((s, it) => s + n0(it.quantity), 0),
+          price: items.reduce((s, it) => s + n0(it.price), 0),
+          customer_price: items.reduce((s, it) => s + n0(it.customer_price), 0),
+          old_price: items.reduce((s, it) => s + n0(it.old_price), 0),
+          payout: items.reduce((s, it) => s + n0(it.payout), 0),
+          commission: items.reduce((s, it) => s + n0(it.commission_amount), 0),
+          discount: items.reduce((s, it) => s + n0(it.total_discount_value), 0),
+        };
+        return { items, sums };
+      }
+
+
+
+
+    function applyOfferFilter(postings, offerId) {
+      const q = String(offerId || '').trim();
+      if (!q) return postings;
+      return postings
+        .map((p) => {
+          const items = postingItems(p).filter((it) => String(it.offer_id) === q);
+          if (!items.length) return null;
+          return { ...p, _filteredItems: items };
+        })
+        .filter(Boolean);
+    }
+
+    function formatRub(x) {
+        const n = Number(x || 0);
+        return n.toLocaleString('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 });
+      }
+
+      
+/* ===== CLUSTER_ANALYTICS_V2 helpers ===== */
+function getClusterFromPosting(p) {
+  try {
+    return (
+      p?.cluster_from ??
+      p?.clusterFrom ??
+      p?.financial_data?.cluster_from ??
+      p?.financialData?.cluster_from ??
+      p?.financial_data?.clusterFrom ??
+      p?.financialData?.clusterFrom ??
+      null
+    );
+  } catch(e) { return null; }
+}
+
+function getClusterToPosting(p) {
+  try {
+    return (
+      p?.cluster_to ??
+      p?.clusterTo ??
+      p?.financial_data?.cluster_to ??
+      p?.financialData?.cluster_to ??
+      p?.financial_data?.clusterTo ??
+      p?.financialData?.clusterTo ??
+      null
+    );
+  } catch(e) { return null; }
+}
+
+function attachClustersToPosting(p) {
+  try {
+    if (!p || typeof p !== 'object') return p;
+    p._cluster_from = getClusterFromPosting(p);
+    p._cluster_to   = getClusterToPosting(p);
+    return p;
+  } catch(e) { return p; }
+}
+/* ===== /CLUSTER_ANALYTICS_V2 helpers ===== */
+
+// --- Forecast costs model (same as Prices/index.html) ---
+      const ACQUIRING_RATE = 0.019;   // 1.9%
+      const PROMOTION_RATE = 0.01;    // 1%
+      const PACKAGING_DEFAULT = 20; // упаковка, ₽ (фикс)
+
+      function schemaOfPosting(p) { return String(p?._schema || p?.schema || '').toUpperCase(); }
+
+      function getCommissionPercentFromPriceCard(pc, schema) {
+  const sch = String(schema || '').toUpperCase() || 'FBS';
+  const cm = (pc && (pc.commissions || pc.raw?.commissions || pc.raw?.price?.commissions)) || {};
+  return (sch === 'FBO')
+    ? (cm.sales_percent_fbo ?? cm.sales_percent ?? 0)
+    : (cm.sales_percent_fbs ?? cm.sales_percent ?? 0);
+}
+function getLogisticsCostFromPriceCard(pc, schema, price, storeName) {
+  if (!pc) return 0;
+
+  const schemaU = String(schema || '').toUpperCase() || 'FBS';
+  const priceNum = asNum(price);
+
+  // storeName может быть пустым — тогда просто используем базовые 29ч
+  const stName = (storeName == null) ? '' : String(storeName);
+
+  const cm = (pc && (pc.commissions || pc.raw?.commissions || pc.raw?.price?.commissions)) || {};
+
+  if (schemaU === 'FBO') {
+    const base = asNum(cm.fbo_direct_flow_trans_min_amount ?? 0);
+    const maxv = asNum(cm.fbo_direct_flow_trans_max_amount ?? base);
+
+    const hours = (typeof getCachedAvgDeliveryHours === 'function' ? (getCachedAvgDeliveryHours(stName) || 29) : 29);
+    const t = (typeof fboTariffParamsByHours === 'function') ? fboTariffParamsByHours(hours) : ({coef:1, fee:0});
+
+    let v = base * asNum(t.coef, 1) + priceNum * asNum(t.fee, 0);
+    if (Number.isFinite(maxv) && maxv > 0) v = Math.min(v, maxv);
+    return v;
+  }
+
+  // FBS: берём MIN (как просили), затем amount, затем max
+  return asNum(
+    cm.fbs_direct_flow_trans_min_amount ??
+    cm.fbs_direct_flow_trans_amount ??
+    cm.fbs_direct_flow_trans_max_amount ??
+    0
+  );
+}
+
+
+
+
+      function asNum(v, d=0) {
+        const n = Number(String(v ?? '').replace(',', '.'));
+        return Number.isFinite(n) ? n : d;
+      }
+
+      function calculateAcquiring(price) { return asNum(price) * ACQUIRING_RATE; }
+      function calculatePromotion(price) { return asNum(price) * PROMOTION_RATE; }
+
+      // costs = commissionAmount + firstMile + logistics + delivery + acquiring + packaging + promotion
+      function computeFbsForecastForLine({ price, commissionPercent, firstMile, logistics, delivery, packaging }) {
+        const p = asNum(price);
+        const commPct = asNum(commissionPercent);
+        const acquiring = calculateAcquiring(p);
+        const promotion = calculatePromotion(p);
+        const commissionAmount = (p * commPct) / 100;
+
+        const fm = asNum(firstMile);
+        const lg = asNum(logistics);
+        const dlv = asNum(delivery);
+        const pkg = asNum(packaging);
+
+        const costs = commissionAmount + fm + lg + dlv + acquiring + pkg + promotion;
+        const payout = p - costs;
+
+        return { price: p, acquiring, promotion, commissionAmount, costs, payout };
+      }
+
+      function getPriceForLine(line) {
+        return asNum(line?.price ?? line?.sale_price ?? line?.selling_price ?? line?.item_price ?? line?.product_price ?? 0);
+      }
+
+      function getPackagingForLine(line, schema) {
+  // фиксированная упаковка: всегда 20 ₽ (по просьбе)
+  return PACKAGING_DEFAULT;
+}
+function getLineCostPrice(line) {
+  // ВАЖНО: сначала берём ПОЛНЫЙ offer_id (он может быть длинным), и только потом bestOfferId()
+  const offerIdRaw = String(
+    line?.offer_id || line?.offerId || line?.offerID ||
+    bestOfferId(line) ||
+    line?.sku || ''
+  ).trim();
+
+  const normOffer = (x) => {
+    const t = String(x || '').trim();
+    const z = t.replace(/^0+/, '');
+    return z || t;
+  };
+
+  const want = normOffer(offerIdRaw);
+  const z = offerIdRaw.replace(/^0+/, '');
+
+  // 1) приоритет: справочник "Цены" (localStorage ozon_offer_metrics_v1)
+  try {
+    const mp = getOfferMetricsMap() || {};
+    let rec = null;
+
+    // прямое попадание
+    if (offerIdRaw && mp[offerIdRaw]) rec = mp[offerIdRaw];
+    if (!rec && z && mp[z]) rec = mp[z];
+
+    // если справочник вложен по магазинам: {store: {offer: {...}}}
+    if (!rec && offerIdRaw) {
+      for (const v of Object.values(mp)) {
+        if (!v || typeof v !== 'object') continue;
+        if (v[offerIdRaw]) { rec = v[offerIdRaw]; break; }
+        if (z && v[z]) { rec = v[z]; break; }
+      }
+    }
+
+    // нормализация ключей (ведущие нули)
+    if (!rec && want) {
+      for (const k of Object.keys(mp)) {
+        if (normOffer(k) === want) { rec = mp[k]; break; }
+      }
+      if (!rec) {
+        for (const v of Object.values(mp)) {
+          if (!v || typeof v !== 'object') continue;
+          for (const k of Object.keys(v)) {
+            if (normOffer(k) === want) { rec = v[k]; break; }
+          }
+          if (rec) break;
+        }
+      }
+    }
+
+    const v = asNum(
+      (getLineNetCost(line) || (rec?.cost_price ?? rec?.costPrice ?? rec?.cost ??
+      rec?.prime_cost ?? rec?.primeCost ??
+      rec?.sebestoimost ?? rec?.seb ??
+      // COSTPRICE_FALLBACK_NETPRICE_V2
+      // fallback: раньше себестоимость часто лежала в netPrice (страница «Цены»)
+      rec?.netPrice ?? rec?.net_price ?? 0))
+    );
+    if (Number.isFinite(v) && v > 0) return v;
+  } catch (e) {}
+
+  // 2) fallback: себест. из данных заказа (если есть)
+  const v2 = asNum(line?.cost_price ?? line?.costPrice ?? line?.prime_cost ?? line?.purchase_price ?? 0);
+  if (Number.isFinite(v2) && v2 > 0) return v2;
+
+  return 0;
+}
+
+
+
+
+
+
+
+
+      function computeForecastTotals(postings) {
+        let priceSum = 0, acquiringSum = 0, promotionSum = 0, commissionSum = 0, otherCostsSum = 0, costsSum = 0, payoutSum = 0;
+        let costPriceSum = 0; // себестоимость
+
+        for (const p of (postings || [])) {
+          const schema = schemaOfPosting(p) || 'FBS';
+          const items = postingItems(p) || [];
+          for (const line of items) {
+            const qty = Math.max(1, asNum(line?.quantity ?? line?.count ?? 1, 1));
+
+            const price = getPriceForLine(line);
+            const pc = line?.priceCard || null;
+
+            const commissionPercent = getCommissionPercentFromPriceCard(pc, schema);
+            const logistics = getLogisticsCostFromPriceCard(pc, schema, price, p._store);
+
+            const cm = (pc && (pc.commissions || pc.raw?.commissions || pc.raw?.price?.commissions)) || {};
+            const fm = (schema === 'FBS')
+              ? asNum(cm.fbs_first_mile_max_amount ?? cm.fbs_first_mile_amount ?? 0)
+              : asNum(cm.fbo_first_mile_amount ?? cm.fbo_first_mile_max_amount ?? 0);
+            const dlv = (schema === 'FBS')
+              ? asNum(cm.fbs_deliv_to_customer_amount ?? cm.fbs_deliv_to_customer_max_amount ?? 0)
+              : asNum(cm.fbo_deliv_to_customer_amount ?? cm.fbo_deliv_to_customer_max_amount ?? 0);
+            const lg = asNum(logistics);
+            const packaging = getPackagingForLine(line, schema);
+            const m = computeFbsForecastForLine({
+              price,
+              commissionPercent,
+              firstMile: fm,
+              logistics: lg,
+              delivery: dlv,
+              packaging
+            });
+
+            priceSum += m.price * qty;
+            acquiringSum += m.acquiring * qty;
+            promotionSum += m.promotion * qty;
+            commissionSum += m.commissionAmount * qty;
+
+            otherCostsSum += (asNum(fm) + asNum(lg) + asNum(dlv) + asNum(packaging)) * qty;
+
+            costsSum += m.costs * qty;
+            payoutSum += m.payout * qty;
+
+            const cost = getLineCostPrice(line);
+            costPriceSum += asNum(cost) * qty;
+          }
+        }
+
+        return { priceSum, acquiringSum, promotionSum, commissionSum, otherCostsSum, costsSum, payoutSum, costPriceSum };
+      }
+      // --- end forecast costs model ---
+
+
+
+    function render(postings) {
+  // --- Forecast summary (costs) ---
+  try {
+    const box = document.getElementById('forecastSummary');
+    if (box) {
+      if (typeof computeForecastTotals === 'function' && typeof formatRub === 'function') {
+        const t = computeForecastTotals(postings || []);
+
+          // если нет метрик себестоимости — наценка будет пустой
+          let metricsCount = 0;
+          try { metricsCount = Object.keys(getOfferMetricsMap() || {}).length; } catch(e) { metricsCount = 0; }
+          const warnNoMetrics = (metricsCount <= 0)
+            ? '<div class="muted" style="margin-top:8px; padding:8px 10px; border:1px dashed #f59e0b; border-radius:10px; background:#fff7ed;">' +
+              '<b>Внимание:</b> нет метрик себестоимости (ozon_offer_metrics_v1). Наценка не считается. ' +
+              'Откройте «Цены», обновите расчёты и вернитесь в «Заказы».' +
+              '</div>'
+            : '';
+        box.innerHTML = `
+          <b>Расходы (прогноз)</b>
+          <div style="margin-top:8px; display:grid; grid-template-columns: 220px 1fr; gap:6px 12px;">
+            <div>Выручка</div><div>${formatRub(t.priceSum)}</div>
+            <div>Комиссия OZON</div><div>${formatRub(t.commissionSum)}</div>
+            <div>Эквайринг (1.9%)</div><div>${formatRub(t.acquiringSum)}</div>
+            <div>Продвижение (1%)</div><div>${formatRub(t.promotionSum)}</div>
+            <div>Логистика/доставка/первая миля/упаковка</div><div>${formatRub(t.otherCostsSum)}</div>
+            <div><b>Всего расходы</b></div><div><b>${formatRub(t.costsSum)}</b></div>
+            <div><b>К выплате</b></div><div><b>${formatRub(t.payoutSum)}</b></div>
+          </div>
+        `;
+       + warnNoMetrics} else {
+        box.innerHTML = `<b>Расходы (прогноз)</b><div class="muted" style="margin-top:6px;">Функции расчёта расходов не найдены (computeForecastTotals/formatRub).</div>`;
+      }
+    }
+  } catch (e) { /* silent */ }
+
+
+      ordersTableWrapper.innerHTML = '';
+      if (!postings.length) {
+        ordersTableWrapper.innerHTML = '<div class="empty">Ничего не найдено за выбранный период.</div>';
+        return;
+      }
+
+      const table = document.createElement('table');
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th></th>
+            <th>Магазин</th>
+            <th>Схема</th>
+            <th>Отправление</th>
+            <th>Создано</th>
+            <th>Статус</th>
+              <th>Артикул</th>
+              <th>Цена</th>
+              <th>Наценка</th>
+              <th>Позиций</th>
+            <th>Штук</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      `;
+      const tbody = table.querySelector('tbody');
+
+      postings
+        .sort((a,b) => String(b.created_at || b.in_process_at || b.shipment_date || b.order_created_at || b.createdAt || '').localeCompare(String(a.created_at || a.in_process_at || a.shipment_date || a.order_created_at || a.createdAt || '')))
+        .forEach((p) => {
+          const key = p.posting_number || p.order_id || Math.random().toString(36).slice(2);
+          const items = p._filteredItems || postingItems(p);
+          const itemsCount = items.length;
+          const qty = items.reduce((s, it) => s + (it.quantity || 0), 0);
+
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td><button type="button" class="btn-secondary btn-small" data-toggle="${key}">Показать</button></td>
+            <td>${p._store || ''}</td>
+            <td>${p._schema || ''}</td>
+            <td>${p.posting_number || p.order_id || ''}</td>
+            <td>${String(p.created_at || p.in_process_at || p.shipment_date || p.order_created_at || p.createdAt || '').slice(0,19).replace('T',' ')}</td>
+            <td>${p.status || ''}</td>
+              <td>${firstOfferId(p) || '—'}</td>
+              <td>${rub(postingPriceForRow(p))}</td>
+              <td>${(postingMarkupPct(p) != null) ? pct(postingMarkupPct(p)) : '—'}</td>
+            <td>${itemsCount}</td>
+            <td>${qty}</td>
+          `;
+          tbody.appendChild(tr);
+
+          const detail = document.createElement('tr');
+          detail.className = 'order-details-row';
+          detail.setAttribute('data-detail-for', key);
+          detail.innerHTML = `
+            <td colspan="11">
+              <div class="table-wrap">
+<table class="mini-table">
+                <thead><tr><th>offer_id</th><th>Название</th><th>Кол-во</th><th>Цена</th><th>Цена покупателя</th><th>Комиссия</th><th>Эквайринг</th><th>Продвижение</th><th>Логистика</th><th>Доставка клиенту</th><th>Первая миля</th><th>Упаковка</th><th>К выплате</th><th>Себест.</th><th>Наценка</th></tr></thead>
+                <tbody>
+${items.map(it => {
+    const pc = it.priceCard || null;
+    const your = pc ? rub(pc.yourPrice) : '—';
+    const cur  = pc ? rub(pc.currentPrice) : '—';
+
+    const schema = String(p._schema || '').toUpperCase() || 'FBS';
+    const price = getPriceForLine(it);
+    const qty = Math.max(1, asNum(it?.quantity ?? it?.count ?? 1, 1));
+
+    const commissionPercent = getCommissionPercentFromPriceCard(pc, schema);
+    const logisticsCalc = getLogisticsCostFromPriceCard(pc, schema, price, p._store);
+
+
+    const cm = (pc && (pc.commissions || pc.raw?.commissions || pc.raw?.price?.commissions)) || {};
+    const isFbs = schema === 'FBS';
+
+    const fm = isFbs
+      ? asNum(cm.fbs_first_mile_max_amount ?? cm.fbs_first_mile_amount ?? cm.first_mile_amount ?? 0)
+      : asNum(cm.fbo_first_mile_amount ?? cm.fbo_first_mile_max_amount ?? cm.first_mile_amount ?? 0);
+    const dlv = isFbs
+      ? asNum(cm.fbs_deliv_to_customer_amount ?? cm.fbs_deliv_to_customer_max_amount ?? cm.delivery_to_customer_amount ?? 0)
+      : asNum(cm.fbo_deliv_to_customer_amount ?? cm.fbo_deliv_to_customer_max_amount ?? cm.delivery_to_customer_amount ?? cm.delivery_amount ?? 0);
+    const lg = asNum(logisticsCalc);
+    const packaging = getPackagingForLine(it, schema);
+    const m = computeFbsForecastForLine({
+      price,
+      commissionPercent,
+      firstMile: fm,
+      logistics: lg,
+      delivery: dlv,
+      packaging
+    });
+
+    const cost = getLineCostPrice(it);
+    
+     
+      const netForMarkup = asNum(price) - (
+        asNum(m?.commissionAmount) +
+        asNum(m?.acquiring) +
+        asNum(m?.promotion) +
+        asNum(fm) + asNum(lg) + asNum(dlv) + asNum(packaging)
+      );
+// payout для наценки: явно вычитаем комиссию/эквайринг/продвижение/логистику/упаковку
+     const payoutForMarkup = asNum(m?.price) - (
+       asNum(m?.commissionAmount) +
+       asNum(m?.acquiring) +
+       asNum(m?.promotion) +
+       asNum(fm) + asNum(lg) + asNum(dlv) + asNum(packaging)
+     );
+const markup = (Number.isFinite(cost) && cost > 0)
+        ? ((netForMarkup - cost) / cost * 100)
+        : null;
+
+    return `<tr>` +
+      `<td>${bestOfferId(it) || it.offer_id || '—'}</td>` +
+      `<td>${it.name || '—'}</td>` +
+      `<td>${it.quantity ?? it.qty ?? 0}</td>` +
+      `<td>${rub(price)}</td>` +
+      `<td>${rub(price)}</td>` +      `<td>${rub(m.commissionAmount * qty)}<div class="muted">${asNum(commissionPercent).toFixed(2)}%</div></td>` +
+      `<td>${rub(asNum(m?.acquiring) * qty)}</td>` +
+      `<td>${rub(asNum(m?.promotion) * qty)}</td>` +
+      `<td>${rub(asNum(lg) * qty)}</td>` +
+      `<td>${rub(asNum(dlv) * qty)}</td>` +
+      `<td>${rub(asNum(fm) * qty)}</td>` +
+      `<td>${rub(asNum(packaging) * qty)}</td>` +
+      `<td>${rub(payoutForMarkup * qty)}</td>` +
+      `<td>${(Number.isFinite(cost) && cost > 0) ? rub(cost) : '<span class=\"muted\">нет</span>'}<div class=\"muted\">ключ: ${String(bestOfferId(it)||'').trim() || '—'}</div></td>` +
+      `<td>${(markup != null) ? pct(markup) : '<span class=\"muted\">нет себест.</span>'}</td>` +
+    `</tr>`;
+  }).join('')}
+</tbody>
+              </table>
+</div>
+            </td>
+          `;
+          tbody.appendChild(detail);
+        });
+
+      ordersTableWrapper.appendChild(table);
+    
+      try { if (typeof renderHourlyChart === 'function') renderHourlyChart(postings); } catch(e) {}
+}
+
+    function renderSummary(postings) {
+      const ordersCount = (postings || []).length;
+      const totalUnits = (postings || []).reduce((sum, p) => {
+        const items = p._filteredItems || postingItems(p);
+        return sum + (items || []).reduce((s, it) => s + (Number(it.quantity || 0) || 0), 0);
+      }, 0);
+
+      ordersSummary.textContent = `Заказов: ${ordersCount} • Штук: ${totalUnits}`;
+    }
+
+async function loadOrders() {
+      // RESET_METRICS_CACHE_V1
+      try { __OZON_METRICS_CACHE = null; } catch(e) {}
+
+      if (!stores.length) {
+        statusText.textContent = 'Магазины не найдены. Откройте «Магазины» и добавьте client_id/api_key.';
+        return;
+      }
+      const fromDay = dateFrom.value;
+      const toDay = dateTo.value;
+      if (!fromDay || !toDay) {
+        statusText.textContent = 'Укажите период.';
+        return;
+      }
+
+      loadBtn.disabled = true;
+      statusText.textContent = 'Загрузка…';
+      ordersSummary.textContent = '';
+      ordersTableWrapper.innerHTML = '';
+      logBox.innerHTML = '';
+
+      try {
+        const sel = storeSelect.value;
+        const selectedStores = (sel === 'all') ? stores : [stores[Number(sel)]].filter(Boolean);
+
+        let allPostings = [];
+        for (const s of selectedStores) {
+          const postings = await fetchPostingsForStore(s, fromDay, toDay);
+          allPostings = allPostings.concat(postings);
+        }
+
+        allPostings = applyOfferFilter(allPostings, offerFilter.value);
+          window.__POSTINGS__ = allPostings;
+                        // prices-by-offer_id (same source as "Цены" page)  [merged across selected stores]
+            try {
+              const allMap = new Map();
+
+              for (const st of selectedStores) {
+                // соберём offer_id из всех postings (можно не фильтровать по магазину — это безопасно, ключи всё равно offer_id)
+                const offerIds = [];
+                for (const p of (allPostings || [])) {
+                  const items = postingItems(p) || [];
+                  for (const x of items) {
+                  const id0 = String(x.offer_id || '').trim();
+                  if (!id0) continue;
+                  offerIds.push(id0);
+                  const idZ = id0.replace(/^0+/, '');
+                  if (idZ && idZ !== id0) offerIds.push(idZ);
+                }
+                }
+
+                const m = await fetchPricesByOfferIds(st, offerIds);
+                if (m && m.forEach) m.forEach((v, k) => allMap.set(String(k), v));
+              }
+
+              window.__PRICES_BY_OFFER__ = allMap;
+            } catch (e) {
+              console.warn('Failed to load prices-by-offer_id', e);
+              window.__PRICES_BY_OFFER__ = new Map();
+            }
+
+renderSummary(allPostings);
+        
+      // RESET_POSTING_ROW_CACHE_V1
+      try {
+        const arr = (typeof allPostings !== 'undefined') ? allPostings : (typeof postings !== 'undefined' ? postings : []);
+        (arr || []).forEach(p => {
+          try { delete p.__postingMarkupCached; } catch(e) {}
+          try { delete p.__postingPriceCached; } catch(e) {}
+        });
+      } catch(e) {}
+
+      // DEBUG_LAST_POSTINGS_V1
+      try { window.__LAST_POSTINGS = allPostings; } catch(e) {}
+
+// CLUSTER_ANALYTICS_V2 hook
+try { (allPostings||[]).forEach(attachClustersToPosting); } catch(e) {}
+try { renderClusterAnalytics(allPostings); } catch(e) {}
+
+// SAVE_LAST_POSTINGS_TO_LS_V1
+try {
+  localStorage.setItem("ozon_last_postings_v1", JSON.stringify(allPostings || []));
+  localStorage.setItem("ozon_last_postings_ts_v1", String(Date.now()));
+} catch(e) {}
+
+// ENSURE_PRICECARD_ON_LINES_V1
+try {
+  const __pm = (typeof getPricesMap === 'function') ? (getPricesMap() || null) : null;
+  if (__pm) {
+    for (const p of (allPostings || [])) {
+      try {
+        const items = (typeof postingItems === 'function') ? (postingItems(p) || null) : (p?.products || p?.items || null);
+        if (items && Array.isArray(items)) {
+          const merged = mergePricesIntoItems(items, __pm);
+          // попытка присвоить обратно в самые частые поля
+          if (Array.isArray(p.products)) p.products = merged;
+          if (Array.isArray(p.items)) p.items = merged;
+          // если postingItems() не привязан к products/items — всё равно priceCard будет доступен через merged,
+          // но это лучше чем ничего.
+        }
+      } catch(e) {}
+    }
+  }
+} catch(e) {}
+
+render(allPostings);
+        statusText.textContent = `Готово: ${allPostings.length} отправлений`;
+      } catch (e) {
+        console.error(e);
+        statusText.textContent = 'Ошибка загрузки. Подробности в логе.';
+        log('Ошибка', { message: e.message || String(e) });
+      } finally {
+        loadBtn.disabled = false;
+      }
+    }
+
+    ordersTableWrapper.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-toggle]');
+      if (!btn) return;
+      const key = btn.getAttribute('data-toggle');
+      const row = ordersTableWrapper.querySelector(`.order-details-row[data-detail-for="${key}"]`);
+      if (!row) return;
+      const isOpen = row.classList.toggle('open');
+      btn.textContent = isOpen ? 'Скрыть' : 'Показать';
+    });
+
+    loadBtn.addEventListener('click', loadOrders);
+
+    (async function init() {
+      setDefaultDates();
+      try {
+        console.log('DEBUG OzonCore keys:', window.OzonCore ? Object.keys(window.OzonCore) : null);
+        console.log('DEBUG OZON_STORES:', window.OZON_STORES);
+        stores = await window.OzonCore.loadStoresAsync();
+        console.log('DEBUG stores.secrets.js OZON_STORES:', window.OZON_STORES);
+        console.log('DEBUG loaded stores:', stores);
+
+      } catch (e) {
+        stores = [];
+      }
+        console.log('DEBUG OzonCore exists:', !!window.OzonCore);
+        console.log('DEBUG OZON_STORES len:', (window.OZON_STORES||[]).length, window.OZON_STORES);
+        console.log('DEBUG stores from loadStoresAsync:', stores);
+      populateStores();
+      statusText.textContent = stores.length ? 'Выберите период и нажмите «Загрузить заказы».' : 'Добавьте магазины.';
+    })();
+  
+
+        // ===== FBO avg delivery time (tariff) helpers =====
+        const FBO_AVG_DELIVERY_TARIFF_TABLE = [
+          {h:29, coef:1.000, fee:0.0000},
+          {h:30, coef:1.050, fee:0.0025},
+          {h:31, coef:1.110, fee:0.0055},
+          {h:32, coef:1.160, fee:0.0080},
+          {h:33, coef:1.230, fee:0.0115},
+          {h:34, coef:1.280, fee:0.0140},
+          {h:35, coef:1.320, fee:0.0160},
+          {h:36, coef:1.360, fee:0.0180},
+          {h:37, coef:1.400, fee:0.0200},
+          {h:38, coef:1.440, fee:0.0220},
+          {h:39, coef:1.480, fee:0.0240},
+          {h:40, coef:1.510, fee:0.0255},
+          {h:41, coef:1.540, fee:0.0270},
+          {h:42, coef:1.570, fee:0.0285},
+          {h:43, coef:1.600, fee:0.0300},
+          {h:44, coef:1.630, fee:0.0315},
+          {h:45, coef:1.660, fee:0.0330},
+          {h:46, coef:1.690, fee:0.0345},
+          {h:47, coef:1.710, fee:0.0355},
+          {h:48, coef:1.730, fee:0.0365},
+          {h:49, coef:1.750, fee:0.0375},
+          {h:50, coef:1.760, fee:0.0380},
+          {h:51, coef:1.770, fee:0.0385},
+          {h:52, coef:1.774, fee:0.0387},
+          {h:53, coef:1.780, fee:0.0390},
+          {h:54, coef:1.784, fee:0.0392},
+          {h:55, coef:1.788, fee:0.0394},
+          {h:56, coef:1.790, fee:0.0395},
+          {h:57, coef:1.792, fee:0.0396},
+          {h:58, coef:1.794, fee:0.0397},
+          {h:59, coef:1.796, fee:0.0398},
+          {h:60, coef:1.798, fee:0.0399},
+          {h:61, coef:1.800, fee:0.0400},
+        ];
+
+        function fboTariffParamsByHours(hours) {
+          const h = Math.max(0, Math.round(asNum(hours, 0)));
+          const t0 = FBO_AVG_DELIVERY_TARIFF_TABLE[0];
+          const t1 = FBO_AVG_DELIVERY_TARIFF_TABLE[FBO_AVG_DELIVERY_TARIFF_TABLE.length-1];
+          if (h <= t0.h) return t0;
+          if (h >= t1.h) return t1;
+          // exact match
+          for (const row of FBO_AVG_DELIVERY_TARIFF_TABLE) {
+            if (row.h === h) return row;
+          }
+          // fallback: closest lower
+          let best = t0;
+          for (const row of FBO_AVG_DELIVERY_TARIFF_TABLE) {
+            if (row.h <= h) best = row;
+            else break;
+          }
+          return best;
+        }
+
+        const __FBO_AVG_DELIVERY_CACHE = {}; // key -> {hours, ts}
+        const __FBO_AVG_DELIVERY_TTL_MS = 6 * 3600 * 1000;
+
+        function getStoreCredsByName(storeName) {
+          try {
+            const nm = String(storeName || '').trim();
+            const st = (window.OZON_STORES && (OZON_STORES[nm] || OZON_STORES[String(nm)])) || null;
+            if (!st) return null;
+            const clientId = st.clientId || st.client_id || st['Client-Id'] || st['ClientId'];
+            const apiKey   = st.apiKey   || st.api_key   || st['Api-Key']   || st['ApiKey'];
+            if (!clientId || !apiKey) return null;
+            return { clientId: String(clientId), apiKey: String(apiKey) };
+          } catch (e) {
+            return null;
+          }
+        }
+
+        async function ozonPostByStore(storeName, path, payload) {
+          // если есть ваш обёрточный клиент — используем его
+          if (window.OzonCore && typeof OzonCore.post === 'function') {
+            return await OzonCore.post(storeName, path, payload);
+          }
+          const creds = getStoreCredsByName(storeName);
+          if (!creds) throw new Error("No creds for store: " + storeName);
+          const url = "https://api-seller.ozon.ru" + path;
+          const resp = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Client-Id": creds.clientId,
+              "Api-Key": creds.apiKey,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload || {})
+          });
+          const txt = await resp.text();
+          let js = {};
+          try { js = txt ? JSON.parse(txt) : {}; } catch(e) { js = {raw: txt}; }
+          if (!resp.ok) throw new Error("HTTP " + resp.status + " " + (txt || "").slice(0,200));
+          return js;
+        }
+
+        function cacheKeyAvgDelivery(storeName) {
+          return "ozon_fbo_avg_delivery_summary::" + String(storeName || '').trim();
+        }
+
+        function getCachedAvgDeliveryHours(storeName) {
+          const key = cacheKeyAvgDelivery(storeName);
+          const now = Date.now();
+          const mem = __FBO_AVG_DELIVERY_CACHE[key];
+          if (mem && mem.ts && (now - mem.ts) < __FBO_AVG_DELIVERY_TTL_MS && Number.isFinite(mem.hours) && mem.hours > 0) {
+            return mem.hours;
+          }
+          try {
+            const raw = localStorage.getItem(key);
+            if (raw) {
+              const obj = JSON.parse(raw);
+              if (obj && obj.ts && (now - obj.ts) < __FBO_AVG_DELIVERY_TTL_MS && Number.isFinite(obj.hours) && obj.hours > 0) {
+                __FBO_AVG_DELIVERY_CACHE[key] = obj;
+                return obj.hours;
+              }
+            }
+          } catch (e) {}
+          return null;
+        }
+
+        async function prefetchAvgDeliveryHoursForStore(storeName) {
+          try {
+            const existing = getCachedAvgDeliveryHours(storeName);
+            if (existing) return existing;
+            const js = await ozonPostByStore(storeName, "/v1/analytics/average-delivery-time/summary", {});
+            const hours = asNum(js?.average_delivery_time ?? js?.result?.average_delivery_time ?? 0);
+            if (Number.isFinite(hours) && hours > 0) {
+              const obj = { hours: hours, ts: Date.now() };
+              const key = cacheKeyAvgDelivery(storeName);
+              __FBO_AVG_DELIVERY_CACHE[key] = obj;
+              try { localStorage.setItem(key, JSON.stringify(obj)); } catch(e) {}
+              return hours;
+            }
+          } catch (e) {
+            // silently ignore
+          }
+          return null;
+        }
+
+        function prefetchAvgDeliveryForAllStores() {
+          try {
+            const stores = window.OZON_STORES ? Object.keys(OZON_STORES) : [];
+            stores.forEach((nm) => { prefetchAvgDeliveryHoursForStore(nm); });
+          } catch (e) {}
+        }
+
+        // запускаем префетч как можно раньше (чтобы к моменту загрузки заказов кеш был готов)
+        try { prefetchAvgDeliveryForAllStores(); } catch (e) {}
+        document.addEventListener("DOMContentLoaded", () => {
+          try { prefetchAvgDeliveryForAllStores(); } catch (e) {}
+        });
+        // ===== /FBO avg delivery time helpers =====
+
+
+/* ===== ORDERS_HOURLY_CHART_V1 (JS) ===== */
+let __hourlyChart = null;
+
+function __hourFromPosting(p) {
+  try {
+    const ts = String(p?.created_at || p?.in_process_at || p?.shipment_date || p?.order_created_at || p?.createdAt || '').trim();
+    if (!ts) return null;
+
+    // Быстрый путь: ISO "YYYY-MM-DDTHH:MM:SS"
+    const m = ts.match(/T(\d{2}):(\d{2}):(\d{2})/);
+    if (m) return Number(m[1]);
+
+    // Fallback: Date parse
+    const d = new Date(ts);
+    if (!isNaN(d.getTime())) return d.getHours();
+
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+
+/* ===== CLUSTER_ANALYTICS_V2 JS ===== */
+function escHtml(s) {
+  const t = String(s ?? '');
+  return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmtRub(x) {
+  try {
+    const n = Number(x||0);
+    return n.toLocaleString('ru-RU', { style:'currency', currency:'RUB', maximumFractionDigits:0 });
+  } catch(e) { return String(x||0); }
+}
+
+function sumPostingQtyAndRevenue(p) {
+  try {
+    const items = (typeof postingItems === 'function') ? (postingItems(p) || []) : (p?.products || p?.items || []);
+    let qty = 0;
+    let rev = 0;
+    for (const it of items) {
+      const q = Number(it?.quantity ?? it?.count ?? 1) || 1;
+      const price = Number(it?.price ?? it?.sale_price ?? it?.selling_price ?? it?.item_price ?? it?.product_price ?? 0) || 0;
+      qty += q;
+      rev += price * q;
+    }
+    return {qty, rev};
+  } catch(e) {
+    return {qty:0, rev:0};
+  }
+}
+
+function buildClusterAgg(postings, schemaNeed) {
+  const mp = new Map();
+  for (const p of (postings||[])) {
+    const schema = String(p?._schema || p?.schema || '').toUpperCase();
+    if (schemaNeed && schema !== schemaNeed) continue;
+
+    const cf = (p?._cluster_from ?? getClusterFromPosting(p) ?? '—');
+    const ct = (p?._cluster_to   ?? getClusterToPosting(p)   ?? '—');
+    const key = String(cf) + " → " + String(ct);
+
+    const m = sumPostingQtyAndRevenue(p);
+    const cur = mp.get(key) || {key, postings:0, qty:0, rev:0};
+    cur.postings += 1;
+    cur.qty += (m.qty||0);
+    cur.rev += (m.rev||0);
+    mp.set(key, cur);
+  }
+  return Array.from(mp.values()).sort((a,b) => (b.postings - a.postings) || (b.qty - a.qty) || (b.rev - a.rev));
+}
+
+function renderClusterTable(elId, rows) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+
+  if (!rows || !rows.length) {
+    el.innerHTML = '<div style="opacity:.7;">Нет данных по кластерам в выбранном периоде.</div>';
+    return;
+  }
+
+  const body = rows.map(r => (
+    '<tr>' +
+      '<td>' + escHtml(r.key) + '</td>' +
+      '<td style="text-align:right;">' + (r.postings||0) + '</td>' +
+      '<td style="text-align:right;">' + (r.qty||0) + '</td>' +
+      '<td style="text-align:right;">' + escHtml(fmtRub(r.rev||0)) + '</td>' +
+    '</tr>'
+  )).join('');
+
+  el.innerHTML =
+    '<table class="table" style="width:100%; font-size:13px;">' +
+      '<thead><tr>' +
+        '<th>Маршрут</th>' +
+        '<th style="text-align:right;">Отправлений</th>' +
+        '<th style="text-align:right;">Штук</th>' +
+        '<th style="text-align:right;">Сумма</th>' +
+      '</tr></thead>' +
+      '<tbody>' + body + '</tbody>' +
+    '</table>';
+}
+
+function renderClusterAnalytics(postings) {
+  try {
+    const fbo = buildClusterAgg(postings, 'FBO');
+    const fbs = buildClusterAgg(postings, 'FBS');
+    renderClusterTable('clusterFboTable', fbo);
+    renderClusterTable('clusterFbsTable', fbs);
+  } catch(e) {
+    console.warn('renderClusterAnalytics failed', e);
+  }
+}
+/* ===== /CLUSTER_ANALYTICS_V2 JS ===== */
+
+function renderHourlyChart(postings) {
+  const canvas = document.getElementById('hourlyChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+
+  const hours = Array.from({length:24}, (_,i)=>i);
+  const labels = hours.map(h => String(h).padStart(2,'0') + ':00');
+
+  const cnt = new Array(24).fill(0);
+  const amount = new Array(24).fill(0);
+
+  for (const p of (postings || [])) {
+    const h = __hourFromPosting(p);
+    if (h == null || h < 0 || h > 23) continue;
+    cnt[h] += 1;
+
+    // сумма заказа: используем существующую функцию, которая уже у вас есть в orders.html
+    try {
+      if (typeof postingPriceForRow === 'function') {
+        amount[h] += Number(postingPriceForRow(p) || 0);
+      } else if (typeof getPostingPrice === 'function') {
+        amount[h] += Number(getPostingPrice(p) || 0);
+      }
+    } catch (e) {}
+  }
+
+  if (__hourlyChart) __hourlyChart.destroy();
+  __hourlyChart = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Кол-во заказов',
+          type: 'bar',
+          data: cnt,
+          yAxisID: 'y',
+          borderWidth: 1
+        },
+        {
+          label: 'Сумма заказов, ₽',
+          type: 'line',
+          data: amount,
+          yAxisID: 'y1',
+          tension: 0.35,
+          pointRadius: 0,
+          pointHitRadius: 12,
+          fill: false
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        y: { title: { display: true, text: 'Заказы' } },
+        y1: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: '₽' } }
+      },
+      plugins: {
+        legend: { display: true }
+      }
+    }
+  });
+}
+/* ===== /ORDERS_HOURLY_CHART_V1 (JS) ===== */
+
+</script>
+<script src="stores_runtime.js"></script>
+<script src="nav.js"></script>
+<script src="stores.secrets.js"></script>
+<script src="ozon_storage.js"></script>
+<script src="nav.js"></script>
+<script src="table_sort.js"></script>
+<script src="ozon_prices_detach_patch.js"></script>
+</body>
+</html>

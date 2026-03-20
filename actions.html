@@ -1,0 +1,1549 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+  <title>Акции OZON</title>
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    .table-wrapper { overflow-x: auto; }
+  </style>
+  <script src="clusters_runtime.js"></script>
+  <script src="clusters_list.js"></script>
+  <script src="ozon_date_range.js"></script>
+  <script src="ozon_api_patch.js"></script>
+  <script src="ozon_server_cache.js"></script>
+  <script src="ozon_api.js"></script>
+
+<script src="/ozon_orders_accruals_patch.js?v=2026-02-05_065103"></script>
+<script src="/ozon_costprice_patch.js?v=2026-02-05_065103"></script>
+</head>
+<body>
+  <header>
+    <h1>Акции OZON</h1>
+    <div class="controls">
+      <label for="storeSelect" style="font-weight:600;">Магазин:</label>
+      <select id="storeSelect" aria-label="Выбор магазина"></select>
+      <label style="display:flex; align-items:center; gap:0.35rem; font-weight:600;">
+        <input id="singleStoreOnly" type="checkbox" checked />
+        Только выбранный магазин
+      </label>
+      <input id="offerFilter" class="filter-input" type="search" placeholder="Фильтр по артикулу" aria-label="Фильтр по артикулу" />
+      <label style="display:flex; align-items:center; gap:0.35rem; font-weight:600;">
+        <input id="checkedOnly" type="checkbox" />
+        Только с галочкой
+      </label>
+      <button id="selectFileButton" type="button">Выбрать XLSX</button>
+    </div>
+    <nav class="nav"></nav>
+  </header>
+
+    <script src="stores.secrets.js?v=2"></script>
+    <script src="scripts/ozon-core.js?v=19"></script>
+<script src="scripts/crypto-polyfill.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <main>
+    <p id="statusText" class="status">Загрузите XLSX с акцией для выбранного магазина.</p>
+
+    <div class="log-progress">
+      <p class="log-progress-label">Запросы: <span id="logProgressText">0/0</span></p>
+      <div class="progress-bar" aria-hidden="true"><div id="logProgressFill" class="progress-fill"></div></div>
+    </div>
+
+    <details class="log-panel">
+      <summary style="font-weight:700; cursor:pointer;">Лог действий</summary>
+      <div id="logEntries" class="log-entries">
+        <div class="log-empty">Логи появятся после чтения файла.</div>
+      </div>
+    </details>
+
+    <section class="card" aria-labelledby="uploadTitle">
+      <div style="display:flex; flex-direction:column; gap:0.35rem;">
+        <h2 id="uploadTitle" style="margin:0;">Импорт XLSX с акцией</h2>
+        <p style="margin:0; color: var(--surface-fg);">Скачайте файл акции в кабинете OZON (кнопка «Импорт в XLS-файле») и загрузите его сюда. Файл хранится отдельно для каждого магазина, а скрытые столбцы используются в формулах.</p>
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:0.75rem; align-items:center; margin-top:0.75rem;">
+        <label class="upload-card" style="display:inline-flex; align-items:center; gap:0.6rem; background: var(--field-bg); color: var(--field-fg); padding: 0.6rem 0.9rem; border-radius: 0.75rem; box-shadow: inset 0 0 0 1px var(--border-color); cursor:pointer; font-weight:600;">
+          <input id="fileInput" type="file" accept=".xlsx,.xls" multiple style="display:none;" />
+          📥 Импортировать XLSX
+        </label>
+        <button id="clearButton" type="button">Очистить данные</button>
+        <p id="fileStatus" style="margin:0; font-weight:600;">Файл не выбран.</p>
+      </div>
+      <p style="margin:0; color: #64748b;">Таблица ниже позволяет менять «Участие товара в акции» (чекбокс) и «Итоговую цену по акции, RUB». При изменениях пересчитывается «Акционный бустинг в поиске» по формуле из файла (учитываются скрытые столбцы).</p>
+    </section>
+
+    <section id="tableSection" class="card" style="display:none;">
+      <h2 style="margin:0 0 0.5rem 0;">Данные из файла</h2>
+      <div class="table-actions">
+        <div class="progress-block">
+          <p class="progress-label">Заполнено итоговых цен: <span id="progressValue">0%</span></p>
+          <div class="progress-bar" aria-hidden="true"><div id="progressFill" class="progress-fill"></div></div>
+        </div>
+        <div class="action-controls">
+          <label class="action-id-input">ID акции
+            <input id="actionIdInput" type="number" inputmode="numeric" value="1977747" />
+          </label>
+          <div class="action-buttons">
+            <button id="autoFillButton" type="button">Выставить итоговые цены</button>
+            <button id="fillFromCurrentButton" type="button">Итог = текущая цена</button>
+            <button id="activateSelectedButton" type="button">Добавить отмеченные</button>
+            <button id="activateAllButton" type="button">Добавить все с ценой</button>
+            <button id="deactivateSelectedButton" type="button">Удалить отмеченные</button>
+            <button id="deactivateExistingButton" type="button">Удалить все, что уже в акции</button>
+            <button id="toggleChangedButton" type="button">Показать только изменённые</button>
+          </div>
+        </div>
+      </div>
+      <div class="table-wrapper" id="elasticTableWrapper"></div>
+    </section>
+  </main>
+
+<script>
+      // Stores from stores.secrets.js
+      const stores = Array.isArray(window.OZON_STORES) ? window.OZON_STORES : [];
+      const fallbackStore = { name: 'Магазин по умолчанию (2521951)', client_id: '2521951', api_key: 'fd6e70c7-5508-4d22-8578-9c544adac478' };
+      if (!stores.length) stores.push(fallbackStore);
+
+    const state = {
+      selectedStoreIndex: 0,
+      filter: '',
+      showChangedOnly: false,
+      showCheckedOnly: false,
+      logs: [],
+      logProgress: { started: 0, finished: 0 },
+      elasticByStore: {},
+      pricingByStore: {},
+      productIdsByStore: {},
+      fileDatesByStore: {},
+      serverFiles: loadServerFiles(),
+      actionId: 1977747,
+      singleStoreOnly: true,
+      lastFiltered: []
+    };
+
+    const STORAGE_KEY = 'ozon_elastic_files_v1';
+
+    const requestCache = new Map();
+
+    const PACKAGING_COST = 40;
+    const PROMOTION_RATE = 0.01;
+    const ACQUIRING_RATE = 0.019;
+
+    const storeSelect = document.getElementById('storeSelect');
+    const offerFilter = document.getElementById('offerFilter');
+    const checkedOnly = document.getElementById('checkedOnly');
+    const fileInput = document.getElementById('fileInput');
+    const selectFileButton = document.getElementById('selectFileButton');
+    const fileStatus = document.getElementById('fileStatus');
+    const statusText = document.getElementById('statusText');
+    const singleStoreOnlyCheckbox = document.getElementById('singleStoreOnly');
+    const logEntries = document.getElementById('logEntries');
+    const logProgressText = document.getElementById('logProgressText');
+    const logProgressFill = document.getElementById('logProgressFill');
+    const tableSection = document.getElementById('tableSection');
+    const elasticTableWrapper = document.getElementById('elasticTableWrapper');
+    const clearButton = document.getElementById('clearButton');
+    const progressValue = document.getElementById('progressValue');
+    const progressFill = document.getElementById('progressFill');
+    const autoFillButton = document.getElementById('autoFillButton');
+    const fillFromCurrentButton = document.getElementById('fillFromCurrentButton');
+    const actionIdInput = document.getElementById('actionIdInput');
+    const activateSelectedButton = document.getElementById('activateSelectedButton');
+    const activateAllButton = document.getElementById('activateAllButton');
+    const deactivateSelectedButton = document.getElementById('deactivateSelectedButton');
+    const deactivateExistingButton = document.getElementById('deactivateExistingButton');
+    const toggleChangedButton = document.getElementById('toggleChangedButton');
+
+    function loadServerFiles() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' ? parsed : {};
+      } catch (error) {
+        console.error('Не удалось прочитать кэш файлов', error);
+        return {};
+      }
+    }
+
+    function saveServerFiles() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state.serverFiles));
+      } catch (error) {
+        console.error('Не удалось сохранить кэш файлов', error);
+      }
+    }
+
+    function escapeHtml(text) {
+      return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function persistServerFile(storeKey, payload) {
+      state.serverFiles[storeKey] = payload;
+      saveServerFiles();
+    }
+
+    function hydrateFromServer(storeKey = getCurrentStoreKey()) {
+      const cached = state.serverFiles[storeKey];
+      if (!cached || !cached.rows || !cached.rows.length) return false;
+      const elastic = getElasticState(storeKey);
+      elastic.rows = cached.rows;
+      stripParticipation(elastic.rows);
+      resetOriginalFlags(elastic.rows);
+      elastic.columns = cached.columns || [];
+      elastic.actionPriceLetter = cached.actionPriceLetter || 'L';
+      elastic.participateLetter = cached.participateLetter || 'K';
+      elastic.sheetName = cached.sheetName || '';
+      state.fileDatesByStore[storeKey] = cached.fileDate || '';
+      fileStatus.textContent = `Загружено из кэша: ${cached.rows.length} строк, файл: ${cached.fileName || '—'}, дата файла: ${cached.fileDate || '—'}`;
+      addLog({ action: 'Кэш', detail: `Используем сохранённый файл для магазина ${stores[state.selectedStoreIndex]?.name || storeKey}` });
+      renderTable();
+      return true;
+    }
+
+    function normalizeHeader(value) {
+      return String(value || '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .replace(/[,.;:]+/g, ' ')
+        .trim();
+    }
+
+    function columnLetterFromIndex(index) {
+      let n = index;
+      let result = '';
+      while (n >= 0) {
+        result = String.fromCharCode((n % 26) + 65) + result;
+        n = Math.floor(n / 26) - 1;
+      }
+      return result;
+    }
+
+    function parseNumber(value) {
+      if (value === null || value === undefined) return NaN;
+      const normalized = String(value)
+        .replace(/[^0-9.,-]+/g, '')
+        .replace(/\s+/g, '')
+        .replace(',', '.');
+      if (!normalized) return NaN;
+      const num = Number(normalized);
+      return Number.isFinite(num) ? num : NaN;
+    }
+
+    async function hashBuffer(buffer) {
+      const digest = await crypto.subtle.digest('SHA-256', buffer);
+      return Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    }
+
+    function extractCreationDate(workbook, file) {
+      if (file?.lastModified) {
+        const fromFile = new Date(file.lastModified);
+        if (!Number.isNaN(fromFile.getTime())) return formatDate(fromFile);
+      }
+
+      const props = workbook?.Props || {};
+      const candidates = [props.CreatedDate, props.Created, props.DateCreated, props.modified];
+      const found = candidates.find(Boolean);
+      if (!found) return formatDate(new Date());
+      const parsed = new Date(found);
+      return Number.isNaN(parsed.getTime()) ? formatDate(new Date()) : formatDate(parsed);
+    }
+
+    function dateOnlyString(date) {
+      return date.toISOString().slice(0, 10);
+    }
+
+    function formatDate(date) {
+      return dateOnlyString(date);
+    }
+
+    function isToday(dateStr) {
+      const today = dateOnlyString(new Date());
+      return dateStr === today;
+    }
+
+    function safeNumber(value) {
+      const num = parseNumber(value);
+      return Number.isFinite(num) ? num : 0;
+    }
+
+    function computeBoost(letters) {
+      if (!letters || typeof letters !== 'object') return '';
+      const bx = (a, b) => (safeNumber(letters[a]) ^ safeNumber(letters[b])) / 1000;
+      const L = parseNumber(letters['L']);
+      const O = safeNumber(letters['O']);
+
+      const bxBG = bx('BB', 'BG');
+      const bxBH = bx('BB', 'BH');
+      if (!Number.isFinite(L)) return '';
+      if (Math.abs(L - bxBG) < 1e-6) return Math.round((bxBH - 1) * 1000) / 1000;
+      if (L > O) return 0;
+
+      const bxBD = bx('BB', 'BD');
+      const bxBC = bx('BB', 'BC');
+      const bxBE = bx('BB', 'BE');
+      const bxBF = bx('BB', 'BF');
+
+      if (bxBD < bxBC || bxBE > bxBF) return Math.round((bxBD - 1) * 1000) / 1000;
+      if (bxBE === 0) return Math.round((bxBC - 1) * 1000) / 1000;
+      if (L <= bxBE) return Math.round((bxBD - 1) * 1000) / 1000;
+      if (L >= bxBF) return Math.round((bxBC - 1) * 1000) / 1000;
+      const denominator = bxBF - bxBE;
+      if (denominator === 0) return '';
+      const res = bxBC + ((bxBF - L) / denominator) * (bxBD - bxBC);
+      const rounded = Math.round(res * 1000) / 1000 - 1;
+      return Number.isFinite(rounded) ? Math.round(rounded * 1000) / 1000 : '';
+    }
+
+    function formatSignedPercent(value, decimals = 1) {
+      if (!Number.isFinite(value)) return '';
+      const sign = value > 0 ? '+' : '';
+      return `${sign}${value.toFixed(decimals)}%`;
+    }
+
+    function gradientStyle(value, min = -40, max = 40) {
+      if (!Number.isFinite(value)) return '';
+      const clamped = Math.min(max, Math.max(min, value));
+      const ratio = (clamped - min) / (max - min || 1);
+      const hue = Math.round(120 * ratio); // 0=red, 120=green
+      const bg = `hsl(${hue}, 80%, 90%)`;
+      const border = `hsl(${hue}, 70%, 65%)`;
+      return `background:${bg}; border-color:${border}; color:${hue < 30 ? '#7f1d1d' : '#0f172a'};`;
+    }
+
+    function renderBoostPill(boostValue) {
+      if (boostValue === '' || boostValue === null || boostValue === undefined) return '';
+      const numeric = Number(boostValue);
+      if (!Number.isFinite(numeric)) return '';
+      let percent = numeric * 100;
+      if (Math.abs(percent) < 1 && Math.abs(numeric) > 0) {
+        percent = numeric * 10000;
+      }
+      const style = gradientStyle(percent, 0, 60);
+      return `<span class="pill" style="${style}">${formatSignedPercent(percent)}</span>`;
+    }
+
+    function getPricingMap() {
+      const key = getCurrentStoreKey();
+      if (!state.pricingByStore[key]) state.pricingByStore[key] = new Map();
+      return state.pricingByStore[key];
+    }
+
+    function getProductIdSet(storeKey = getCurrentStoreKey()) {
+      if (!state.productIdsByStore[storeKey]) state.productIdsByStore[storeKey] = new Set();
+      return state.productIdsByStore[storeKey];
+    }
+
+    function getPricingForOffer(article) {
+      const map = getPricingMap();
+      return map.get(String(article ?? ''));
+    }
+
+    function getEffectivePrice(row) {
+      const candidates = [row.actionPrice, row.currentPrice, row.yourPrice];
+      for (const val of candidates) {
+        const num = parseNumber(val);
+        if (Number.isFinite(num) && num > 0) return num;
+      }
+      return 0;
+    }
+
+    function computeFinancials(row) {
+      const priceInfo = getPricingForOffer(row.article) || {};
+      const price = getEffectivePrice(row);
+      const commissionPercent = Number(priceInfo.commissionPercent ?? 0);
+      const netPriceRaw = priceInfo.netPrice;
+      const netPriceParsed = parseNumber(netPriceRaw);
+      const hasNetPrice = Number.isFinite(netPriceParsed);
+      const netPrice = hasNetPrice ? netPriceParsed : NaN;
+      const firstMile = Number(priceInfo.firstMile ?? 0);
+      const logistics = Number(priceInfo.logistics ?? 0);
+      const delivery = Number(priceInfo.delivery ?? 0);
+      const acquiring = Math.round(price * ACQUIRING_RATE * 100) / 100;
+      const promotion = Math.round(price * PROMOTION_RATE * 100) / 100;
+
+      const commissionAmount = (price * commissionPercent) / 100;
+      const fbsCosts = commissionAmount + firstMile + logistics + delivery + acquiring + PACKAGING_COST + promotion;
+      const payout = price - fbsCosts;
+      const margin = payout - netPrice; // рубли
+      const marginPercent = price ? (margin / price) * 100 : NaN;
+      const markupPercent = netPrice ? (margin / netPrice) * 100 : NaN;
+
+      return { margin, marginPercent, markupPercent, hasNetPrice };
+    }
+
+    function isActionPriceBelowMin(row) {
+      const minPrice = parseNumber(row.minPrice);
+      const actionPrice = parseNumber(row.actionPrice);
+      return Number.isFinite(minPrice) && Number.isFinite(actionPrice) && actionPrice < minPrice;
+    }
+
+    function allowParticipation(row, boostValue) {
+      const { hasNetPrice, margin, markupPercent } = computeFinancials(row);
+      const boost = Number.parseFloat(boostValue ?? row.boost);
+      const hasBoost = Number.isFinite(boost); // разрешаем даже 0% бустинг
+      const marginOk = Number.isFinite(margin) && margin >= 0;
+      const markupOk = Number.isFinite(markupPercent) && markupPercent >= 15;
+      const actionVsMinOk = !isActionPriceBelowMin(row);
+      return hasNetPrice && hasBoost && marginOk && markupOk && actionVsMinOk;
+    }
+
+    function isMinPriceAboveBoost(row) {
+      const minPrice = parseNumber(row.minPrice);
+      const minBoost = parseNumber(row.minBoostPrice);
+      return Number.isFinite(minPrice) && Number.isFinite(minBoost) && minPrice > minBoost;
+    }
+
+    function reapplyParticipationFromPricing() {
+      const elastic = getElasticState();
+      elastic.rows.forEach((row, idx) => {
+        row.boost = computeBoost(row.letters);
+        markRowChanged(row);
+        refreshRenderedRow(idx);
+      });
+      renderTable();
+    }
+
+    function gradientPercentStyle(percent) {
+      if (!Number.isFinite(percent)) return '';
+      if (percent < 0) {
+        return 'background:#fee2e2;border-color:#ef4444;color:#7f1d1d;';
+      }
+      const capped = Math.min(percent, 40);
+      const ratio = capped / 40;
+      const hue = Math.round(60 + ratio * 60); // 60=жёлтый->120=зелёный
+      const bg = `hsl(${hue}, 80%, 90%)`;
+      const border = `hsl(${hue}, 70%, 55%)`;
+      const color = hue < 80 ? '#854d0e' : '#064e3b';
+      return `background:${bg};border-color:${border};color:${color};`;
+    }
+
+    function markRowChanged(row) {
+      const currentPrice = row.actionPrice;
+      const currentParticipate = !!row.participate;
+      const originalPrice = row.originalActionPrice;
+      const originalParticipate = !!row.originalParticipate;
+      const priceChanged = Number.isFinite(parseNumber(currentPrice))
+        ? Math.abs(parseNumber(currentPrice) - parseNumber(originalPrice)) > 0.0001
+        : originalPrice !== '' && !Number.isFinite(parseNumber(originalPrice));
+      row.changed = priceChanged || currentParticipate !== originalParticipate;
+    }
+
+    function resetOriginalFlags(rows = []) {
+      rows.forEach((row) => {
+        row.originalActionPrice = row.actionPrice;
+        row.originalParticipate = row.participate;
+        row.changed = false;
+      });
+    }
+
+    function stripParticipation(rows = []) {
+      rows.forEach((row) => {
+        row.participate = false;
+        row.originalParticipate = false;
+        if (row.letters) {
+          row.letters.K = '';
+          const elastic = getElasticState();
+          const pLetter = elastic.participateLetter || 'K';
+          row.letters[pLetter] = '';
+        }
+      });
+    }
+
+    function updateProgressBar(total, completed) {
+      if (!progressValue || !progressFill) return;
+      const safeTotal = Number(total) || 0;
+      const safeCompleted = Math.min(Number(completed) || 0, safeTotal);
+      const percent = safeTotal ? Math.round((safeCompleted / safeTotal) * 100) : 0;
+      progressValue.textContent = `${percent}% (${safeCompleted}/${safeTotal || 0})`;
+      progressFill.style.width = `${percent}%`;
+      progressFill.setAttribute('aria-valuenow', String(percent));
+      progressFill.setAttribute('aria-valuemin', '0');
+      progressFill.setAttribute('aria-valuemax', '100');
+    }
+
+    function toggleVisibleParticipation(checked, filteredRows = []) {
+      const elastic = getElasticState();
+      if (!elastic.rows.length) return;
+
+      const targets = filteredRows?.length
+        ? filteredRows
+        : elastic.rows.map((row, index) => ({ row, originalIndex: index }));
+
+      targets.forEach(({ originalIndex }) => {
+        updateElasticRow(originalIndex, { participate: checked });
+      });
+
+      renderTable();
+      updateStatus(checked ? 'Отмечены все строки с валидной ценой.' : 'Все галочки сняты.');
+    }
+
+    function getActionId() {
+      const raw = actionIdInput?.value ?? state.actionId;
+      const num = parseNumber(raw);
+      return Number.isFinite(num) && num > 0 ? num : null;
+    }
+
+    function collectRowsForAction({ includeUnchecked = false } = {}) {
+      const elastic = getElasticState();
+      return elastic.rows.filter((row) => {
+        const productId = parseNumber(row.ozonId);
+        const price = parseNumber(row.actionPrice);
+        if (!Number.isFinite(productId) || !Number.isFinite(price) || price <= 0) return false;
+        if (!includeUnchecked && !row.participate) return false;
+        return true;
+      });
+    }
+
+    function chunkArray(list, size) {
+      const result = [];
+      for (let i = 0; i < list.length; i += size) result.push(list.slice(i, i + size));
+      return result;
+    }
+
+    function formatSignedCurrency(value) {
+      if (!Number.isFinite(value)) return '—';
+      const sign = value > 0 ? '+' : value < 0 ? '−' : '';
+      const abs = Math.abs(value).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return `${sign}${abs} ₽`;
+    }
+
+    function renderMarkupCell(row) {
+      const { markupPercent } = computeFinancials(row);
+      if (!Number.isFinite(markupPercent)) return '<span class="pill" style="opacity:0.7;">—</span>';
+      const style = gradientPercentStyle(markupPercent);
+      return `<span class="pill" style="${style}">${formatSignedPercent(markupPercent)}</span>`;
+    }
+
+    function renderMarginCell(row) {
+      const { margin, marginPercent } = computeFinancials(row);
+      if (!Number.isFinite(margin) || !Number.isFinite(marginPercent)) {
+        return '<span class="pill" style="opacity:0.7;">—</span>';
+      }
+      const style = gradientPercentStyle(marginPercent);
+      return `<span class="pill" style="${style}">${formatSignedCurrency(margin)}</span>`;
+    }
+
+    function getCurrentStoreKey() {
+      return stores[state.selectedStoreIndex]?.client_id || 'default';
+    }
+
+    function getElasticState(storeKey = getCurrentStoreKey()) {
+      if (!state.elasticByStore[storeKey]) {
+        state.elasticByStore[storeKey] = {
+          rows: [],
+          columns: [],
+          actionPriceLetter: 'L',
+          participateLetter: 'K'
+        };
+      }
+      return state.elasticByStore[storeKey];
+    }
+
+    function addLog({ action, detail = '' }) {
+      state.logs.unshift({
+        time: new Date().toLocaleTimeString(),
+        action,
+        detail
+      });
+      if (state.logs.length > 50) state.logs.pop();
+      renderLogs();
+    }
+
+    function beginLogTask(label = '') {
+      state.logProgress.started += 1;
+      renderLogProgress(label);
+    }
+
+    function endLogTask() {
+      state.logProgress.finished = Math.min(
+        state.logProgress.started,
+        state.logProgress.finished + 1
+      );
+      renderLogProgress();
+    }
+
+    function renderLogProgress(label = '') {
+      if (!logProgressText || !logProgressFill) return;
+      const { started, finished } = state.logProgress;
+      const percent = started ? Math.min(100, Math.round((finished / started) * 100)) : 0;
+      logProgressText.textContent = `${finished}/${started}${label ? ` — ${label}` : ''}`;
+      logProgressFill.style.width = `${percent}%`;
+    }
+
+    function renderLogs() {
+      if (!logEntries) return;
+      if (!state.logs.length) {
+        logEntries.innerHTML = '<div class="log-empty">Логи появятся после чтения файла.</div>';
+        return;
+      }
+      logEntries.innerHTML = state.logs
+        .map((entry) => `<div class="log-entry">[${entry.time}] ${escapeHtml(entry.action)}${entry.detail ? `\n${escapeHtml(entry.detail)}` : ''}</div>`)
+        .join('');
+    }
+
+    function updateStatus(text) {
+      statusText.textContent = text;
+    }
+
+    function refreshFileStatus() {
+      const key = getCurrentStoreKey();
+      const elastic = getElasticState(key);
+      const dateNote = state.fileDatesByStore[key] ? ` Дата файла: ${state.fileDatesByStore[key]}.` : '';
+      if (elastic.rows.length) {
+        fileStatus.textContent = `Загружено строк: ${elastic.rows.length} (${elastic.columns.length} столбцов).${dateNote}`;
+      } else {
+        fileStatus.textContent = 'Файл не выбран для этого магазина.';
+      }
+    }
+
+    function renderStoreSelect() {
+      storeSelect.innerHTML = stores
+        .map((store, index) => `<option value="${index}" ${index === state.selectedStoreIndex ? 'selected' : ''}>${escapeHtml(store.name || store.client_id)}</option>`)
+        .join('');
+    }
+
+    function renderTable() {
+      const elastic = getElasticState();
+      if (!elastic.rows.length) {
+        tableSection.style.display = 'none';
+        elasticTableWrapper.innerHTML = '';
+        updateProgressBar(0, 0);
+        refreshFileStatus();
+        state.lastFiltered = [];
+        return;
+      }
+
+      const headers = [
+        'Артикул',
+        'Название',
+        'Ваша цена, RUB',
+        'Текущая цена, RUB',
+        'Минимальная цена, RUB',
+        'Участие товара в акции',
+        'Итоговая цена по акции, RUB',
+        'Акционный бустинг в поиске',
+        'Наценка',
+        'Маржа',
+        'Цена для минимального акционного бустинга, RUB',
+        'Цена для максимального акционного бустинга, RUB'
+      ];
+
+      const filtered = [];
+      elastic.rows.forEach((row, originalIndex) => {
+        const matchesFilter = !state.filter || String(row.article || '').toLowerCase().includes(state.filter);
+        const matchesChange = !state.showChangedOnly || row.changed;
+        const matchesCheckbox = !state.showCheckedOnly || !!row.participate;
+        if (matchesFilter && matchesChange && matchesCheckbox) {
+          filtered.push({ row, originalIndex });
+        }
+      });
+      state.lastFiltered = filtered;
+
+      const selectable = filtered;
+      const masterChecked = selectable.length > 0 && selectable.every(({ row }) => row.participate);
+
+      const headerHtml = headers
+        .map((col) => {
+          if (col === 'Участие товара в акции') {
+            return `<th class="no-wrap"><label style="display:flex;align-items:center;gap:0.4rem;">${escapeHtml(col)}<input type="checkbox" id="masterCheckbox" ${
+              selectable.length ? '' : 'disabled'
+            } ${masterChecked ? 'checked' : ''} /></label></th>`;
+          }
+          return `<th>${escapeHtml(col)}</th>`;
+        })
+        .join('');
+
+      const table = document.createElement('table');
+      table.setAttribute('aria-label', 'Данные из XLSX акции');
+      const thead = document.createElement('thead');
+      thead.innerHTML = `<tr>${headerHtml}</tr>`;
+      const tbody = document.createElement('tbody');
+      table.appendChild(thead);
+      table.appendChild(tbody);
+      elasticTableWrapper.innerHTML = '';
+      elasticTableWrapper.appendChild(table);
+
+      if (!filtered.length) {
+        tbody.innerHTML = '<tr><td colspan="12">Нет данных</td></tr>';
+      }
+
+      const chunkSize = 200;
+      let index = 0;
+      const renderChunk = () => {
+        const slice = filtered.slice(index, index + chunkSize);
+        index += chunkSize;
+        if (!slice.length) return;
+        const html = slice
+          .map(({ row, originalIndex }) => {
+            const isChecked = row.participate;
+            return `
+              <tr data-row-index="${originalIndex}">
+                <td data-label="Артикул">${escapeHtml(row.article || '')}</td>
+                <td data-label="Название">${escapeHtml(row.name || '')}</td>
+                <td data-label="Ваша цена, RUB">${escapeHtml(row.yourPrice ?? '')}</td>
+                <td data-label="Текущая цена, RUB">${escapeHtml(row.currentPrice ?? '')}</td>
+                <td data-label="Минимальная цена, RUB">${escapeHtml(row.minPrice ?? '')}</td>
+                <td data-label="Участие товара в акции" class="no-wrap"><input type="checkbox" data-row="${originalIndex}" ${isChecked ? 'checked' : ''} /></td>
+                <td data-label="Итоговая цена по акции, RUB"><input type="number" inputmode="decimal" step="0.01" data-price="${originalIndex}" value="${row.actionPrice ?? ''}" /></td>
+                <td data-label="Акционный бустинг в поиске" class="boost-cell">${renderBoostPill(row.boost)}</td>
+                <td data-label="Наценка" class="markup-cell">${renderMarkupCell(row)}</td>
+                <td data-label="Маржа" class="margin-cell">${renderMarginCell(row)}</td>
+                <td data-label="Цена для минимального акционного бустинга, RUB">${escapeHtml(row.minBoostPrice ?? '')}</td>
+                <td data-label="Цена для максимального акционного бустинга, RUB">${escapeHtml(row.maxBoostPrice ?? '')}</td>
+              </tr>
+            `;
+          })
+          .join('');
+        tbody.insertAdjacentHTML('beforeend', html);
+        if (index < filtered.length) {
+          (window.requestIdleCallback || window.requestAnimationFrame || setTimeout)(renderChunk);
+        }
+      };
+      if (filtered.length) {
+        renderChunk();
+      }
+
+      tableSection.style.display = 'block';
+      updateProgressBar(
+        elastic.rows.length,
+        elastic.rows.filter((row) => Number.isFinite(parseNumber(row.actionPrice))).length
+      );
+      refreshFileStatus();
+    }
+
+    function updateElasticRow(rowIndex, updates) {
+      const elastic = getElasticState();
+      const row = elastic.rows[rowIndex];
+      if (!row) return;
+
+      const hasParticipateUpdate = Object.prototype.hasOwnProperty.call(updates, 'participate');
+
+      if (Object.prototype.hasOwnProperty.call(updates, 'actionPrice')) {
+        const parsedValue = updates.actionPrice === '' ? '' : parseNumber(updates.actionPrice);
+        row.actionPrice = Number.isFinite(parsedValue) ? parsedValue : '';
+        const letter = elastic.actionPriceLetter || 'L';
+        row.letters[letter] = row.actionPrice;
+        row.letters['L'] = row.actionPrice;
+      }
+
+      row.boost = computeBoost(row.letters);
+      if (hasParticipateUpdate) {
+        row.participate = !!updates.participate;
+      } else {
+        const canParticipate = allowParticipation(row, row.boost);
+        row.participate = canParticipate && Number.isFinite(row.actionPrice) && row.actionPrice > 0;
+        if (row.participate && !canParticipate) {
+          row.participate = false;
+        }
+      }
+
+      const pLetter = elastic.participateLetter || 'K';
+      row.letters[pLetter] = row.participate ? 1 : '';
+      row.letters['K'] = row.participate ? 1 : '';
+      markRowChanged(row);
+      refreshRenderedRow(rowIndex);
+      updateProgressBar(
+        elastic.rows.length,
+        elastic.rows.filter((r) => Number.isFinite(parseNumber(r.actionPrice))).length
+      );
+    }
+
+    function refreshRenderedRow(rowIndex) {
+      const elastic = getElasticState();
+      const row = elastic.rows[rowIndex];
+      const rowEl = elasticTableWrapper.querySelector(`tr[data-row-index="${rowIndex}"]`);
+      if (!rowEl || !row) return;
+
+      const boostCell = rowEl.querySelector('.boost-cell');
+      if (boostCell) boostCell.innerHTML = renderBoostPill(row.boost);
+
+      const markupCell = rowEl.querySelector('.markup-cell');
+      if (markupCell) markupCell.innerHTML = renderMarkupCell(row);
+
+      const marginCell = rowEl.querySelector('.margin-cell');
+      if (marginCell) marginCell.innerHTML = renderMarginCell(row);
+
+      const checkbox = rowEl.querySelector('input[type="checkbox"][data-row]');
+      if (checkbox) checkbox.checked = !!row.participate;
+    }
+
+    function autoFillActionPrices() {
+      const elastic = getElasticState();
+      if (!elastic.rows.length) {
+        addLog({ action: 'Автозаполнение', detail: 'Нет загруженных строк' });
+        updateStatus('Сначала загрузите файл с акцией.');
+        return;
+      }
+
+      let changed = 0;
+      elastic.rows.forEach((row, idx) => {
+        const minKnownPrice = parseNumber(row.minPrice);
+        const maxBoostPriceRaw = parseNumber(row.maxBoostPrice);
+        const minBoostPriceRaw = parseNumber(row.minBoostPrice);
+        const currentPrice = parseNumber(row.currentPrice);
+        if (!Number.isFinite(maxBoostPriceRaw) || !Number.isFinite(minBoostPriceRaw)) return;
+        if (maxBoostPriceRaw <= 0 || minBoostPriceRaw <= 0) return;
+        const lowerBoost = Math.min(minBoostPriceRaw, maxBoostPriceRaw);
+        const upperBoost = Math.max(minBoostPriceRaw, maxBoostPriceRaw);
+
+        let targetPrice = null;
+
+        if (Number.isFinite(minKnownPrice) && minKnownPrice > 0) {
+          if (minKnownPrice > upperBoost) {
+            targetPrice = upperBoost; // выше потолка — берём максимум
+          } else if (minKnownPrice >= lowerBoost && minKnownPrice <= upperBoost) {
+            targetPrice = minKnownPrice; // внутри коридора — оставляем минимальную цену
+          } else {
+            targetPrice = null; // ниже коридора — не трогаем
+          }
+        }
+
+        if (!Number.isFinite(targetPrice) || targetPrice <= 0) return;
+
+        const letters = { ...row.letters, L: targetPrice };
+        const simulatedRow = { ...row, actionPrice: targetPrice, letters };
+        const boostValue = computeBoost(letters);
+        const { margin } = computeFinancials(simulatedRow);
+        const shouldParticipate = allowParticipation(simulatedRow, boostValue);
+
+        const alreadySet = Number.isFinite(row.actionPrice)
+          && Math.abs(Number(row.actionPrice) - targetPrice) < 0.0001;
+        const needsParticipate = shouldParticipate ? !row.participate : row.participate;
+
+        if (!alreadySet || needsParticipate) {
+          updateElasticRow(idx, { actionPrice: targetPrice, participate: shouldParticipate });
+          changed += 1;
+        }
+      });
+
+      if (changed) {
+        renderTable();
+        addLog({ action: 'Автозаполнение', detail: `Обновлено строк: ${changed}` });
+        updateStatus(`Выставлены итоговые цены в ${changed} строках.`);
+      } else {
+        addLog({ action: 'Автозаполнение', detail: 'Подходящих строк не найдено' });
+        updateStatus('Не нашли строк, подходящих под условия автозаполнения.');
+      }
+    }
+
+    function fillFromCurrentPrices() {
+      const elastic = getElasticState();
+      if (!elastic.rows.length) {
+        addLog({ action: 'Итог = текущая', detail: 'Нет строк для обновления' });
+        updateStatus('Сначала загрузите файл с акцией.');
+        return;
+      }
+
+      let changed = 0;
+      elastic.rows.forEach((row, idx) => {
+        const current = parseNumber(row.currentPrice);
+        if (!Number.isFinite(current) || current <= 0) return;
+        updateElasticRow(idx, { actionPrice: current, participate: true });
+        changed += 1;
+      });
+
+      if (changed) {
+        renderTable();
+        addLog({ action: 'Итог = текущая', detail: `Обновлено строк: ${changed}` });
+        updateStatus(`Итоговая цена обновлена из текущей в ${changed} строках.`);
+      } else {
+        addLog({ action: 'Итог = текущая', detail: 'Нет строк с текущей ценой' });
+        updateStatus('Нет строк с заполненной текущей ценой.');
+      }
+    }
+
+    async function activateProducts({ includeUnchecked = false } = {}) {
+      const actionId = getActionId();
+      const store = stores[state.selectedStoreIndex];
+      if (!actionId) {
+        updateStatus('Укажите корректный ID акции.');
+        return;
+      }
+      if (!store) {
+        updateStatus('Не выбран магазин для отправки цен.');
+        return;
+      }
+
+      const rows = collectRowsForAction({ includeUnchecked });
+      if (!rows.length) {
+        updateStatus('Нет строк с ценой и OzonID для добавления.');
+        return;
+      }
+
+      addLog({ action: 'Подготовка к добавлению', detail: `ID акции: ${actionId}, строк: ${rows.length}` });
+      updateStatus('Отправляем товары в акцию...');
+
+      const chunks = chunkArray(rows, 1000);
+      let sent = 0;
+      for (const chunk of chunks) {
+        const products = chunk.map((row) => ({
+          product_id: Number(parseNumber(row.ozonId)),
+          action_price: Math.round(parseNumber(row.actionPrice) * 100) / 100
+        }));
+
+        await postJson(
+          'https://api-seller.ozon.ru/v1/actions/products/activate',
+          { action_id: actionId, products },
+          store
+        );
+        sent += products.length;
+      }
+
+      addLog({ action: 'Добавлено в акцию', detail: `Всего строк: ${sent}` });
+      updateStatus(`В акцию отправлено ${sent} строк.`);
+    }
+
+  async function deactivateProducts({ includeUnchecked = false } = {}) {
+      const actionId = getActionId();
+      const store = stores[state.selectedStoreIndex];
+      if (!actionId) {
+        updateStatus('Укажите корректный ID акции.');
+        return;
+      }
+      if (!store) {
+        updateStatus('Не выбран магазин для удаления товаров из акции.');
+        return;
+      }
+
+      try {
+        const rows = collectRowsForAction({ includeUnchecked });
+        const productIds = rows
+          .filter((row) => Number.isFinite(parseNumber(row.ozonId)))
+          .map((row) => Number(parseNumber(row.ozonId)));
+        if (!productIds.length) {
+          updateStatus('Нет OzonID для удаления.');
+          return;
+        }
+
+        addLog({ action: 'Подготовка к удалению', detail: `ID акции: ${actionId}, строк: ${productIds.length}` });
+        updateStatus('Удаляем товары из акции...');
+
+        const chunks = chunkArray(productIds, 1000);
+        let removed = 0;
+        for (const chunk of chunks) {
+          addLog({ action: 'DELETE chunk', detail: JSON.stringify({ action_id: actionId, product_ids: chunk }) });
+          await postJson(
+            'https://api-seller.ozon.ru/v1/actions/products/deactivate',
+            { action_id: actionId, product_ids: chunk },
+            store
+          );
+          removed += chunk.length;
+        }
+
+        addLog({ action: 'Удалено из акции', detail: `Строк: ${removed}` });
+        updateStatus(`Из акции удалено ${removed} строк.`);
+      } catch (error) {
+        addLog({ action: 'Ошибка удаления', detail: error.message || String(error) });
+        updateStatus(`Удаление не удалось: ${error.message || error}`);
+      }
+    }
+
+    async function fetchParticipatingProductIds(actionId, store) {
+      let lastId = '';
+      const ids = [];
+      const seenPages = new Set();
+      let page = 0;
+
+      do {
+        if (seenPages.has(String(lastId))) {
+          addLog({ action: 'Участники: цикл прерван', detail: `last_id повторился: ${lastId}` });
+          break;
+        }
+        seenPages.add(String(lastId));
+
+        const payload = { action_id: actionId, limit: 100, last_id: lastId };
+        addLog({ action: 'GET участвующие', detail: JSON.stringify(payload) });
+        const response = await postJson('https://api-seller.ozon.ru/v1/actions/products', payload, store, 30000);
+        const products = response?.result?.products || [];
+        products.forEach((product) => {
+          const id = parseNumber(product.id);
+          if (Number.isFinite(id)) ids.push(Number(id));
+        });
+        const nextLast = response?.result?.last_id || '';
+        addLog({ action: 'Участники: страница', detail: `Получено: ${products.length}, total: ${response?.result?.total ?? '?'}, last_id: ${nextLast}` });
+        lastId = nextLast;
+        page += 1;
+        if (page > 500) {
+          addLog({ action: 'Участники: остановка', detail: 'Достигнут лимит страниц (500)' });
+          break;
+        }
+      } while (lastId);
+
+      return ids;
+    }
+
+    async function removeAllParticipating() {
+      const actionId = getActionId();
+      const store = stores[state.selectedStoreIndex];
+      if (!actionId) {
+        updateStatus('Укажите корректный ID акции.');
+        return;
+      }
+      if (!store) {
+        updateStatus('Не выбран магазин для удаления товаров из акции.');
+        return;
+      }
+
+      try {
+        updateStatus('Получаем список участвующих товаров...');
+        addLog({ action: 'Загрузка участвующих', detail: `ID акции: ${actionId}` });
+        const ids = await fetchParticipatingProductIds(actionId, store);
+        if (!ids.length) {
+          updateStatus('В акции нет товаров для удаления.');
+          addLog({ action: 'Удаление', detail: 'Не нашли товаров в акции' });
+          return;
+        }
+
+        addLog({ action: 'Удаление всех', detail: `Будет удалено позиций: ${ids.length}` });
+        const chunks = chunkArray(ids, 1000);
+        let removed = 0;
+        for (const chunk of chunks) {
+          addLog({ action: 'DELETE chunk', detail: JSON.stringify({ action_id: actionId, product_ids: chunk }) });
+          await postJson(
+            'https://api-seller.ozon.ru/v1/actions/products/deactivate',
+            { action_id: actionId, product_ids: chunk },
+            store
+          );
+          removed += chunk.length;
+        }
+
+        updateStatus(`Удалили из акции ${removed} позиций.`);
+        addLog({ action: 'Удаление всех', detail: `Удалено: ${removed}` });
+      } catch (error) {
+        updateStatus(`Удаление всех товаров не удалось: ${error.message || error}`);
+        addLog({ action: 'Ошибка удаления всех', detail: error.message || String(error) });
+      }
+    }
+
+    async function handleFiles(files) {
+      if (!files?.length) return;
+      if (!window.XLSX) {
+        updateStatus('Библиотека XLSX не загрузилась. Проверьте интернет.');
+        return;
+      }
+
+      state.logProgress = { started: 0, finished: 0 };
+      renderLogProgress();
+
+      for (const file of files) {
+        updateStatus(`Читаем файл ${file.name}...`);
+
+        try {
+          const data = await file.arrayBuffer();
+          const digest = await hashBuffer(data);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const fileDate = extractCreationDate(workbook, file);
+          const parsed = parseElasticSheet(workbook);
+          stripParticipation(parsed.rows);
+          resetOriginalFlags(parsed.rows);
+
+          const targetStore = await detectStoreForRows(parsed.rows);
+          if (targetStore.index < 0 || targetStore.matches === 0) {
+            updateStatus('Файл не соответствует выбранному магазину (OzonID не совпадают).');
+            addLog({ action: 'Пропуск файла', detail: `${file.name} не содержит товаров выбранного магазина` });
+            continue;
+          }
+          if (targetStore.index !== state.selectedStoreIndex) {
+            state.selectedStoreIndex = targetStore.index;
+            storeSelect.value = String(targetStore.index);
+            refreshFileStatus();
+          }
+          const store = stores[state.selectedStoreIndex];
+          const storeKey = store?.client_id || getCurrentStoreKey();
+
+          const cached = state.serverFiles[storeKey];
+          if (cached && cached.hash === digest && cached.fileDate === fileDate && cached.rows?.length) {
+            addLog({ action: 'Пропуск файла', detail: `${file.name} — совпадает с сохранённым (${fileDate}); используем кэш` });
+            hydrateFromServer(storeKey);
+            continue;
+          }
+
+          const elastic = getElasticState(storeKey);
+          elastic.rows = parsed.rows;
+          elastic.columns = parsed.columns;
+          elastic.actionPriceLetter = parsed.actionPriceLetter || 'L';
+          elastic.participateLetter = parsed.participateLetter || 'K';
+          elastic.sheetName = parsed.sheetName || '';
+          state.fileDatesByStore[storeKey] = fileDate;
+          persistServerFile(storeKey, {
+            rows: JSON.parse(JSON.stringify(parsed.rows)),
+            columns: parsed.columns,
+            actionPriceLetter: parsed.actionPriceLetter || 'L',
+            participateLetter: parsed.participateLetter || 'K',
+            sheetName: parsed.sheetName || '',
+            fileDate,
+            hash: digest,
+            fileName: file.name
+          });
+
+          fileStatus.textContent = `Загружено строк: ${parsed.rows.length} (${parsed.columns.length} столбцов) c листа «${parsed.sheetName || '—'}». Дата файла: ${fileDate}.`;
+          addLog({ action: 'Файл загружен', detail: `${file.name}, лист: ${parsed.sheetName || '—'}, строк: ${parsed.rows.length}, дата: ${fileDate}` });
+          renderTable();
+          refreshFileStatus();
+          updateStatus(`Данные для магазина «${stores[state.selectedStoreIndex]?.name || stores[state.selectedStoreIndex]?.client_id || ''}» готовы.`);
+          fetchPricingForRows(parsed.rows).catch((error) => {
+            console.error(error);
+            addLog({ action: 'Ошибка загрузки цен', detail: error.message || String(error) });
+          });
+        } catch (error) {
+          console.error(error);
+          updateStatus(`Не удалось прочитать XLSX: ${error.message || error}`);
+          addLog({ action: 'Ошибка чтения файла', detail: error.message || String(error) });
+        } finally {
+          fileInput.value = '';
+        }
+      }
+    }
+
+    function parseElasticSheet(workbook) {
+      let best = { rows: [], columns: [], actionPriceLetter: 'L', participateLetter: 'K', sheetName: '' };
+
+      workbook.SheetNames.forEach((sheetName) => {
+        const sheet = workbook.Sheets[sheetName];
+        const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+        if (!matrix.length) return;
+
+        const headerRowIndex = Math.max(
+          matrix.findIndex((row) => row.some((cell) => typeof cell === 'string' && normalizeHeader(cell).includes('артикул'))),
+          0
+        );
+        const headerRow = matrix[headerRowIndex] || [];
+        const dataRows = matrix.slice(headerRowIndex + 1).filter((row) => row.some((cell) => String(cell).trim() !== ''));
+      const maxLength = Math.max(headerRow.length, ...dataRows.map((row) => row.length));
+
+        const columns = Array.from({ length: maxLength }, (_, idx) => String(headerRow[idx] || ''));
+        const normalized = Array.from({ length: maxLength }, (_, idx) => normalizeHeader(headerRow[idx]));
+
+        const findIndexByNames = (candidates) => {
+          const normalizedCandidates = candidates.map((c) => normalizeHeader(c));
+          return normalized.findIndex((name) => normalizedCandidates.includes(name));
+        };
+
+        const idxArticle = findIndexByNames(['артикул']);
+        const idxName = findIndexByNames(['название']);
+        const idxYourPrice = findIndexByNames(['ваша цена, rub', 'ваша цена']);
+        const idxOzonId = findIndexByNames(['ozonid', 'ozon id', 'ozon_id', 'id', 'product id', 'product_id']);
+        const idxCurrentPrice = findIndexByNames(['текущая цена, rub', 'текущая цена']);
+        const idxMinPrice = findIndexByNames(['минимальная цена, rub', 'минимальная цена']);
+        const idxParticipate = findIndexByNames(['участие товара в акции']);
+        const idxActionPrice = findIndexByNames(['итоговая цена по акции, rub', 'итоговая цена по акции']);
+        const idxBoost = findIndexByNames(['акционный бустинг в поиске']);
+        const idxMinBoostPrice = findIndexByNames(['цена для минимального акционного бустинга, rub']);
+        const idxMaxBoostPrice = findIndexByNames(['цена для максимального акционного бустинга, rub']);
+
+        const rows = dataRows.map((row) => {
+          const letters = {};
+          for (let idx = 0; idx < maxLength; idx += 1) {
+            letters[columnLetterFromIndex(idx)] = row[idx];
+          }
+
+          const article = idxArticle >= 0 ? row[idxArticle] : '';
+          const name = idxName >= 0 ? row[idxName] : '';
+          const yourPrice = idxYourPrice >= 0 ? row[idxYourPrice] : '';
+          const ozonId = idxOzonId >= 0 ? row[idxOzonId] : '';
+          const currentPrice = idxCurrentPrice >= 0 ? row[idxCurrentPrice] : '';
+          const minPriceRaw = idxMinPrice >= 0 ? row[idxMinPrice] : '';
+          const minPrice = typeof minPriceRaw === 'string' ? minPriceRaw.replace(/\*/g, '').trim() : minPriceRaw;
+          const actionPriceValue = idxActionPrice >= 0 ? row[idxActionPrice] : '';
+          const parsedAction = actionPriceValue === '' ? '' : parseNumber(actionPriceValue);
+          const actionPrice = Number.isFinite(parsedAction) ? parsedAction : '';
+          const boostCell = idxBoost >= 0 ? row[idxBoost] : '';
+          const minBoostPrice = idxMinBoostPrice >= 0 ? row[idxMinBoostPrice] : '';
+          const maxBoostPrice = idxMaxBoostPrice >= 0 ? row[idxMaxBoostPrice] : '';
+
+          if (idxParticipate >= 0) {
+            letters[columnLetterFromIndex(idxParticipate)] = '';
+          }
+          letters['K'] = '';
+          if (idxActionPrice >= 0) {
+            letters[columnLetterFromIndex(idxActionPrice)] = actionPrice;
+          }
+          letters['L'] = actionPrice;
+
+          const computedBoost = computeBoost(letters);
+
+          return {
+            article,
+            name,
+            ozonId,
+            yourPrice,
+            currentPrice,
+            minPrice,
+            participate: false,
+            actionPrice,
+            boost: computedBoost === '' ? boostCell : computedBoost,
+            minBoostPrice,
+            maxBoostPrice,
+            letters,
+            originalActionPrice: actionPrice,
+            originalParticipate: false,
+            changed: false
+          };
+        });
+
+        if (rows.length > best.rows.length) {
+          best = {
+            rows,
+            columns,
+            actionPriceLetter: idxActionPrice >= 0 ? columnLetterFromIndex(idxActionPrice) : 'L',
+            participateLetter: idxParticipate >= 0 ? columnLetterFromIndex(idxParticipate) : 'K',
+            sheetName: sheetName
+          };
+        }
+      });
+
+      return best;
+    }
+
+    async function detectStoreForRows(rows) {
+      const ozonIds = Array.from(
+        new Set(rows.map((r) => String(r.ozonId || '').trim()).filter(Boolean))
+      );
+      if (!ozonIds.length || !stores.length) return { index: state.selectedStoreIndex, matches: 0 };
+
+      const countMatches = async (store) => {
+        const set = await ensureProductIds(store);
+        return ozonIds.reduce((acc, id) => (set.has(id) ? acc + 1 : acc), 0);
+      };
+
+      if (state.singleStoreOnly || stores.length === 1) {
+        const store = stores[state.selectedStoreIndex];
+        const matches = store ? await countMatches(store) : 0;
+        addLog({
+          action: 'Сопоставление файла',
+          detail: `Ищем только в выбранном магазине (${store?.name || store?.client_id}), совпадений: ${matches}`
+        });
+        return { index: matches > 0 ? state.selectedStoreIndex : -1, matches };
+      }
+
+      let best = { index: state.selectedStoreIndex, matches: 0 };
+      for (let i = 0; i < stores.length; i += 1) {
+        const store = stores[i];
+        const matches = await countMatches(store);
+        if (matches > best.matches) {
+          best = { index: i, matches };
+        }
+      }
+
+      addLog({
+        action: 'Сопоставление файла',
+        detail: `Нашли совпадений по OzonID: ${best.matches}${best.index >= 0 ? ` → магазин ${stores[best.index]?.name || stores[best.index]?.client_id}` : ''}`
+      });
+
+      return best;
+    }
+
+    async function fetchPricingForRows(rows) {
+      const store = stores[state.selectedStoreIndex];
+      if (!store) {
+        addLog({ action: 'Магазин не выбран' });
+        return;
+      }
+
+      const offerIds = Array.from(
+        new Set(rows.map((r) => String(r.article || '').trim()).filter(Boolean))
+      );
+
+      if (!offerIds.length) {
+        addLog({ action: 'Нет артикулов для запроса цен' });
+        return;
+      }
+
+      updateStatus('Получаем комиссии и себестоимости из OZON...');
+      addLog({ action: 'POST /v5/product/info/prices', detail: `Артикулы: ${offerIds.length}` });
+
+      try {
+        const items = await fetchPricesInChunks(offerIds, store);
+        const mapped = items.map(mapPriceItem).filter((item) => item.offerId);
+        const pricingMap = getPricingMap();
+        mapped.forEach((item) => pricingMap.set(item.offerId, item));
+        addLog({ action: 'Цены получены', detail: `Строк: ${mapped.length}` });
+        applyApiPricingToRows();
+        reapplyParticipationFromPricing();
+      } catch (error) {
+        console.error(error);
+        addLog({ action: 'Ошибка цен', detail: error.message || String(error) });
+      } finally {
+        updateStatus(`Данные для магазина «${store.name || store.client_id}» готовы.`);
+      }
+    }
+
+    async function fetchPricesInChunks(offerIds, store) {
+      const chunkSize = 100;
+      const allItems = [];
+
+      for (let i = 0; i < offerIds.length; i += chunkSize) {
+        const chunk = offerIds.slice(i, i + chunkSize);
+        const response = await postJson(
+          'https://api-seller.ozon.ru/v5/product/info/prices',
+          {
+            filter: { offer_id: chunk, visibility: 'ALL' },
+            limit: chunk.length,
+            cursor: ''
+          },
+          store
+        );
+
+        if (Array.isArray(response?.items)) {
+          allItems.push(...response.items);
+        }
+      }
+
+      return allItems;
+    }
+
+    async function ensureProductIds(store) {
+      const key = store.client_id;
+      const targetSet = getProductIdSet(key);
+      if (targetSet.size) return targetSet;
+
+      updateStatus('Загружаем список товаров для сопоставления файлов...');
+      addLog({ action: 'POST /v3/product/list', detail: `Магазин ${store.name || store.client_id}` });
+
+      let lastId = '';
+      do {
+        const response = await postJson(
+          'https://api-seller.ozon.ru/v3/product/list',
+          {
+            filter: { visibility: 'ALL' },
+            last_id: lastId,
+            limit: 100
+          },
+          store
+        );
+
+        const items = response?.result?.items || [];
+        items.forEach((item) => {
+          const pid = String(item?.product_id ?? '').trim();
+          if (pid) targetSet.add(pid);
+        });
+
+        lastId = response?.result?.last_id || '';
+      } while (lastId);
+
+      addLog({ action: 'Товары загружены', detail: `Всего: ${targetSet.size}` });
+      return targetSet;
+    }
+
+    function mapPriceItem(item) {
+      const price = item?.price ?? {};
+      const commissions = item?.commissions ?? {};
+      const basePrice = Number(price.marketing_seller_price ?? price.price ?? 0);
+
+      return {
+        offerId: String(item?.offer_id ?? ''),
+        netPrice: Number(price.net_price ?? 0),
+        commissionPercent: Number(commissions.sales_percent_fbs ?? 0),
+        firstMile: Number(commissions.fbs_first_mile_max_amount ?? 0),
+        logistics: Number(commissions.fbs_direct_flow_trans_max_amount ?? 0),
+        delivery: Number(commissions.fbs_deliv_to_customer_amount ?? 0),
+        acquiring: Number(item?.acquiring ?? calculateAcquiring(basePrice)),
+        currentPrice: basePrice,
+        minPrice: Number(price.min_price ?? 0)
+      };
+    }
+
+    function applyApiPricingToRows() {
+      const elastic = getElasticState();
+      const pricingMap = getPricingMap();
+      let touched = 0;
+
+      elastic.rows.forEach((row, idx) => {
+        const offerId = String(row.article || '').trim();
+        const info = pricingMap.get(offerId);
+        if (!info) return;
+
+        if (Number.isFinite(info.currentPrice) && info.currentPrice > 0) {
+          row.currentPrice = info.currentPrice;
+        }
+
+        if (Number.isFinite(info.minPrice) && info.minPrice > 0) {
+          row.minPrice = info.minPrice;
+        }
+
+        row.boost = computeBoost(row.letters);
+        markRowChanged(row);
+        touched += 1;
+        refreshRenderedRow(idx);
+      });
+
+      if (touched) renderTable();
+    }
+
+    function calculateAcquiring(price) {
+      const numericPrice = Number(price) || 0;
+      return Math.round(numericPrice * ACQUIRING_RATE * 100) / 100;
+    }
+
+    async function postJson(url, payload, store, timeoutMs = 20000) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const bodyText = JSON.stringify(payload);
+      const shouldCache = !/\/actions\/products\//.test(url);
+      const cacheKey = `${store?.client_id || 'unknown'}|${url}|${bodyText}`;
+      if (shouldCache && requestCache.has(cacheKey)) {
+        const cached = requestCache.get(cacheKey);
+        addLog({ action: `Кэш ${url}`, detail: `Магазин ${store?.name || store?.client_id || ''}` });
+        return typeof structuredClone === 'function'
+          ? structuredClone(cached)
+          : JSON.parse(JSON.stringify(cached));
+      }
+      beginLogTask(url);
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Client-Id': store.client_id,
+            'Api-Key': store.api_key
+          },
+          body: bodyText,
+          signal: controller.signal
+        });
+        clearTimeout(timer);
+
+        const responseText = await response.clone().text().catch(() => '');
+        addLog({ action: `${response.ok ? 'OK' : 'Ошибка'} ${response.status} ${url}`, detail: responseText });
+
+        if (!response.ok) {
+          throw new Error(`Ошибка API (${response.status}): ${responseText || 'нет ответа'}`);
+        }
+
+        if (!responseText) return {};
+        try {
+          const parsed = JSON.parse(responseText);
+          if (shouldCache) requestCache.set(cacheKey, parsed);
+          return parsed;
+        } catch (parseError) {
+          addLog({ action: 'Парсинг ответа', detail: 'Не удалось распарсить JSON' });
+          throw parseError;
+        }
+      } catch (error) {
+        clearTimeout(timer);
+        addLog({ action: 'Сеть/таймаут', detail: error.message || String(error) });
+        throw error;
+      } finally {
+        endLogTask();
+      }
+    }
+
+    function clearData() {
+      const key = getCurrentStoreKey();
+      const elastic = getElasticState(key);
+      elastic.rows = [];
+      elastic.columns = [];
+      delete state.fileDatesByStore[key];
+      state.logProgress = { started: 0, finished: 0 };
+      renderTable();
+      refreshFileStatus();
+      addLog({ action: 'Данные очищены' });
+      updateStatus('Данные очищены. Загрузите новый файл.');
+      renderLogProgress();
+    }
+
+    function init() {
+      renderStoreSelect();
+      renderLogs();
+      renderLogProgress();
+      renderTable();
+      state.singleStoreOnly = !!singleStoreOnlyCheckbox.checked;
+      hydrateFromServer();
+
+      storeSelect.addEventListener('change', () => {
+        state.selectedStoreIndex = Number(storeSelect.value) || 0;
+        refreshFileStatus();
+        const hydrated = hydrateFromServer();
+        if (!hydrated) renderTable();
+        updateStatus(`Выбран магазин «${stores[state.selectedStoreIndex]?.name || stores[state.selectedStoreIndex]?.client_id || ''}». Загрузите XLSX.`);
+        const elastic = getElasticState();
+        if (elastic.rows.length && !getPricingMap().size) {
+          fetchPricingForRows(elastic.rows).catch((error) => {
+            console.error(error);
+            addLog({ action: 'Ошибка загрузки цен', detail: error.message || String(error) });
+          });
+        }
+      });
+
+      offerFilter.addEventListener('input', (event) => {
+        state.filter = String(event.target.value || '').trim().toLowerCase();
+        renderTable();
+      });
+
+      checkedOnly.addEventListener('change', (event) => {
+        state.showCheckedOnly = !!event.target.checked;
+        renderTable();
+      });
+
+      actionIdInput.addEventListener('input', () => {
+        const value = parseNumber(actionIdInput.value);
+        if (Number.isFinite(value) && value > 0) state.actionId = value;
+      });
+
+      selectFileButton.addEventListener('click', () => fileInput.click());
+      document.querySelector('label.upload-card input')?.addEventListener('change', (e) => handleFiles(Array.from(e.target.files || [])));
+      fileInput.addEventListener('change', (event) => handleFiles(Array.from(event.target.files || [])));
+      singleStoreOnlyCheckbox.addEventListener('change', (event) => {
+        state.singleStoreOnly = !!event.target.checked;
+        addLog({
+          action: 'Режим магазина',
+          detail: state.singleStoreOnly
+            ? 'Сопоставляем только с выбранным магазином'
+            : 'Сопоставляем по всем магазинам'
+        });
+      });
+      autoFillButton.addEventListener('click', autoFillActionPrices);
+      fillFromCurrentButton.addEventListener('click', fillFromCurrentPrices);
+      activateSelectedButton.addEventListener('click', () => activateProducts({ includeUnchecked: false }));
+      activateAllButton.addEventListener('click', () => activateProducts({ includeUnchecked: true }));
+      deactivateSelectedButton.addEventListener('click', () => deactivateProducts({ includeUnchecked: false }));
+      deactivateExistingButton.addEventListener('click', removeAllParticipating);
+      toggleChangedButton.addEventListener('click', () => {
+        state.showChangedOnly = !state.showChangedOnly;
+        toggleChangedButton.textContent = state.showChangedOnly
+          ? 'Показать все'
+          : 'Показать только изменённые';
+        renderTable();
+      });
+      clearButton.addEventListener('click', clearData);
+      elasticTableWrapper.addEventListener('change', (event) => {
+        const target = event.target;
+        if (target?.id === 'masterCheckbox') {
+          toggleVisibleParticipation(!!target.checked, state.lastFiltered);
+          return;
+        }
+        if (target?.dataset?.row) {
+          const rowIndex = Number(target.dataset.row);
+          updateElasticRow(rowIndex, { participate: target.checked });
+        }
+      });
+      elasticTableWrapper.addEventListener('input', (event) => {
+        const target = event.target;
+        if (target?.dataset?.price) {
+          const rowIndex = Number(target.dataset.price);
+          const value = target.value === '' ? '' : Number(target.value);
+          updateElasticRow(rowIndex, { actionPrice: value });
+        }
+      });
+    }
+
+    init();
+  </script>
+<script src="stores_runtime.js"></script>
+<script src="nav.js"></script>
+<script src="stores.secrets.js"></script>
+<script src="ozon_storage.js"></script>
+<script src="nav.js"></script>
+<script src="table_sort.js"></script>
+<script src="ozon_prices_detach_patch.js"></script>
+</body>
+</html>

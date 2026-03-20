@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Кластеры — OZON</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    .controls { gap:10px; align-items:center; flex-wrap:wrap; }
+    .grid { display:flex; gap:12px; flex-wrap:wrap; align-items:stretch; margin:12px 0; }
+    .grid > .col { flex: 1 1 520px; min-width: 320px; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:8px 10px; border-bottom:1px solid rgba(0,0,0,.08); }
+    th { text-align:left; white-space:nowrap; }
+    .muted { opacity:.75; }
+    .right { text-align:right; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:rgba(47,129,247,.12); border:1px solid rgba(47,129,247,.25); }
+    .log { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .card h2 { margin-top:0; }
+  </style>
+  <script src="clusters_runtime.js"></script>
+  <script src="clusters_list.js"></script>
+  <script src="ozon_date_range.js"></script>
+  <script src="ozon_api_patch.js"></script>
+  <script src="ozon_server_cache.js"></script>
+  <script src="ozon_api.js"></script>
+
+<script src="/ozon_orders_accruals_patch.js?v=2026-02-05_065103"></script>
+<script src="/ozon_costprice_patch.js?v=2026-02-05_065103"></script>
+</head>
+<body>
+  <header>
+    <div class="title">Кластеры</div>
+    <nav class="nav"></nav>
+  </header>
+
+  <div class="controls" style="padding:0 20px 12px; display:flex;">
+    <select id="storeSelect"></select>
+
+    <input type="date" id="dateFrom" class="date-input" />
+    <input type="date" id="dateTo" class="date-input" />
+
+    <label class="row" style="gap:6px;">
+      <input type="checkbox" id="schFBO" checked />
+      <span>FBO</span>
+    </label>
+    <label class="row" style="gap:6px;">
+      <input type="checkbox" id="schFBS" checked />
+      <span>FBS</span>
+    </label>
+
+    <select id="clusterMode" title="Какой кластер считать">
+      <option value="to" selected>cluster_to (куда уехало)</option>
+      <option value="from">cluster_from (откуда отгрузили)</option>
+    </select>
+
+    <label class="row" style="gap:6px;" title="Запросы по дням: надёжнее, но больше запросов">
+      <input type="checkbox" id="perDay" />
+      <span>по дням</span>
+    </label>
+
+    <input id="offerFilter" class="filter-input" type="search" placeholder="offer_id (опционально)" style="min-width:240px;" />
+
+    <button id="loadBtn">Загрузить</button>
+  </div>
+
+  <main>
+    <section class="card" aria-live="polite">
+      <h2>Статус</h2>
+      <div class="status-row" style="justify-content:space-between;">
+        <span id="statusText">Выберите период и нажмите «Загрузить»</span>
+        <span class="badge" id="summaryBadge"></span>
+      </div>
+      <div class="muted" style="margin-top:8px;">
+        Считает по строкам товаров: offer_id, qty, revenue и группирует по кластеру (cluster_to или cluster_from).
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Сводка по кластерам</h2>
+      <div id="clustersWrap"></div>
+    </section>
+
+    <section class="card">
+      <h2>Детализация: offer_id × кластер</h2>
+      <div id="detailsWrap"></div>
+    </section>
+
+    <section class="card">
+      <h2>Лог</h2>
+      <div class="log" id="logBox"></div>
+    </section>
+  </main>
+
+  <script src="stores.secrets.js?v=3"></script>
+  <script>
+    const logBox = document.getElementById('logBox');
+    const statusText = document.getElementById('statusText');
+    const summaryBadge = document.getElementById('summaryBadge');
+    const storeSelect = document.getElementById('storeSelect');
+    const dateFrom = document.getElementById('dateFrom');
+    const dateTo = document.getElementById('dateTo');
+    const offerFilter = document.getElementById('offerFilter');
+    const loadBtn = document.getElementById('loadBtn');
+    const schFBO = document.getElementById('schFBO');
+    const schFBS = document.getElementById('schFBS');
+    const perDay = document.getElementById('perDay');
+    const clusterMode = document.getElementById('clusterMode');
+
+    const clustersWrap = document.getElementById('clustersWrap');
+    const detailsWrap = document.getElementById('detailsWrap');
+
+    function escapeHtml(s){ return String(s).replace(/[&<>"]/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
+
+    function log(message, data){
+      const entry = document.createElement('div');
+      entry.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${escapeHtml(message)}`;
+      if (data) entry.innerHTML += `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+      logBox.appendChild(entry);
+      logBox.scrollTop = logBox.scrollHeight;
+      try { console.log(message, data||''); } catch(e){}
+    }
+
+    function setDefaultDates(){
+      const now = new Date();
+      const d2 = new Date(now);
+      const d1 = new Date(now); d1.setDate(d1.getDate() - 30);
+      dateTo.value = d2.toISOString().slice(0,10);
+      dateFrom.value = d1.toISOString().slice(0,10);
+    }
+
+    function normClusterName(x){
+      return String(x ?? '').trim().toLowerCase();
+    }
+
+    function daysBetweenInclusive(fromISO, toISO){
+      try{
+        const a = new Date(fromISO);
+        const b = new Date(toISO);
+        const x = Date.UTC(a.getFullYear(),a.getMonth(),a.getDate());
+        const y = Date.UTC(b.getFullYear(),b.getMonth(),b.getDate());
+        const d = Math.floor((y-x)/86400000) + 1;
+        return d > 0 ? d : 1;
+      }catch(e){ return 1; }
+    }
+
+    function pickStoreAuthHeaders(store){
+      const cid = store?.client_id ?? store?.clientId ?? store?.client ?? store?.cid ?? store?.ClientId ?? store?.['Client-Id'];
+      const api = store?.api_key ?? store?.apiKey ?? store?.key ?? store?.ApiKey ?? store?.['Api-Key'];
+      if(!cid || !api) return null;
+      return {
+        'Client-Id': String(cid),
+        'Api-Key': String(api),
+        'Content-Type': 'application/json'
+      };
+    }
+
+    function loadStores(){
+      // независимая загрузка: только из window.* / secrets
+      let list = [];
+      try {
+        if (Array.isArray(window.OZON_STORES) && window.OZON_STORES.length) list = window.OZON_STORES;
+        else if (Array.isArray(window.stores) && window.stores.length) list = window.stores;
+        else if (Array.isArray(window.ozonStores) && window.ozonStores.length) list = window.ozonStores;
+        else if (Array.isArray(window.OzonStores) && window.OzonStores.length) list = window.OzonStores;
+      } catch(e) {}
+      return Array.isArray(list) ? list : [];
+    }
+
+    function initStoresUI(stores){
+      storeSelect.innerHTML = '';
+
+      const optAll = document.createElement('option');
+      optAll.value = 'all';
+      optAll.textContent = 'Все магазины';
+      storeSelect.appendChild(optAll);
+
+      stores.forEach((s, idx) => {
+        const o = document.createElement('option');
+        o.value = String(idx);
+        o.textContent = s.name || ('Магазин ' + (idx+1));
+        storeSelect.appendChild(o);
+      });
+    }
+
+    function getSelectedStores(stores){
+      const v = String(storeSelect.value || 'all');
+      if (v === 'all') return stores.slice();
+      const idx = Number(v);
+      if (!Number.isFinite(idx) || idx < 0 || idx >= stores.length) return [];
+      return [stores[idx]];
+    }
+
+    function isoDayUTC(d){
+      const dt = new Date(d);
+      if(!isFinite(dt)) return '';
+      const y = dt.getUTCFullYear();
+      const m = String(dt.getUTCMonth()+1).padStart(2,'0');
+      const dd = String(dt.getUTCDate()).padStart(2,'0');
+      return `${y}-${m}-${dd}`;
+    }
+
+    function addDaysISO(ymd, add){
+      const d = new Date(ymd + 'T00:00:00.000Z');
+      d.setUTCDate(d.getUTCDate() + Number(add||0));
+      return isoDayUTC(d);
+    }
+
+    async function fetchPostingsList(store, schema, sinceISO, toISO){
+      const hdr = pickStoreAuthHeaders(store);
+      if(!hdr) throw new Error('Нет Client-Id/Api-Key у выбранного магазина.');
+
+      const limit = 1000;
+      let offset = 0;
+      const out = [];
+
+      const url = (schema === 'FBS')
+        ? 'https://api-seller.ozon.ru/v3/posting/fbs/list'
+        : 'https://api-seller.ozon.ru/v2/posting/fbo/list';
+
+      for(let iter=0; iter<250; iter++){
+        const body = {
+          dir: "ASC",
+          filter: { since: sinceISO, to: toISO },
+          limit: limit,
+          offset: offset,
+          with: { analytics_data: true, financial_data: true }
+        };
+
+        const r = await fetch(url, { method:'POST', headers: hdr, body: JSON.stringify(body) });
+        const t = await r.text();
+        let j = null; try{ j = t ? JSON.parse(t) : null; }catch(e){ j=null; }
+
+        if(!r.ok){
+          const msg = (j && (j.message || j.error)) ? (j.message || j.error) : (t || `HTTP ${r.status}`);
+          throw new Error(schema + ' posting/list: ' + msg);
+        }
+
+        let items = j?.result?.postings || j?.result?.items || j?.postings || j?.items || [];
+        // FBO v2: { result: [ ... ] }
+        if((!items || !items.length) && Array.isArray(j?.result)) items = j.result;
+
+        if(!Array.isArray(items) || !items.length) break;
+
+        for(const it of items){
+          try { it._schema = schema; } catch(e){}
+          out.push(it);
+        }
+
+        if(items.length < limit) break;
+        offset += limit;
+      }
+
+      return out;
+    }
+
+    function getClusterFromPosting(p){
+      const ad = p?.analytics_data || p?.analyticsData || null;
+      const fd = p?.financial_data  || p?.financialData  || null;
+
+      const from = (
+        fd?.cluster_from ?? fd?.clusterFrom ??
+        ad?.cluster_from ?? ad?.clusterFrom ??
+        p?.cluster_from  ?? p?.clusterFrom  ??
+        ''
+      );
+
+      const to = (
+        fd?.cluster_to ?? fd?.clusterTo ??
+        ad?.cluster_to ?? ad?.clusterTo ??
+        p?.cluster_to  ?? p?.clusterTo  ??
+        ''
+      );
+
+      return {
+        cluster_from: String(from||'').trim(),
+        cluster_to: String(to||'').trim()
+      };
+    }
+
+    function getPostingDateISO(p){
+      const dt = p?.created_at ?? p?.createdAt ?? p?.in_process_at ?? p?.inProcessAt ?? '';
+      const d = new Date(dt);
+      return isFinite(d) ? d.toISOString() : '';
+    }
+
+    function sumLineQtyRevenue(line, fdProd){
+      const qty = Number(line?.quantity ?? line?.qty ?? line?.count ?? 0) || 0;
+      if(!qty) return {qty:0, rev:0};
+
+      // unit price: prefer financial_data.products[i].price if present
+      const unitPrice =
+        Number(fdProd?.price ?? fdProd?.old_price ?? 0) ||
+        Number(line?.price ?? line?.selling_price ?? line?.unit_price ?? line?.unitPrice ?? line?.item_price ?? line?.product_price ?? 0) ||
+        0;
+
+      // if total line exists, use it; else price*qty
+      const totalLine = Number(line?.total_price ?? line?.totalPrice ?? line?.total ?? 0) || 0;
+
+      const rev = totalLine ? totalLine : (unitPrice * qty);
+      return {qty, rev};
+    }
+
+    function aggregate(postings, mode, offerQ, daysPeriod){
+      // mode: 'to' or 'from'
+      const byCluster = new Map();      // cluster -> {qty, rev, offers:Set}
+      const byDetail  = new Map();      // cluster||offer -> {cluster, offer, qty, rev, stores:Set, schemes:Set}
+
+      for(const p of (postings||[])){
+        const {cluster_from, cluster_to} = getClusterFromPosting(p);
+        const cl = (mode === 'from') ? cluster_from : cluster_to;
+        const clKey = normClusterName(cl || '—') || '—';
+
+        const items = p?.products || p?.items || [];
+        const fd = p?.financial_data || p?.financialData || null;
+        const fdProds = fd?.products || [];
+
+        for(let i=0;i<items.length;i++){
+          const line = items[i] || {};
+          const offer = String(line?.offer_id ?? line?.offerId ?? line?.offerID ?? line?.offer ?? '').trim();
+          if(!offer) continue;
+          if(offerQ && offer !== offerQ) continue;
+
+          const x = sumLineQtyRevenue(line, fdProds?.[i]);
+          if(!x.qty) continue;
+
+          // cluster totals
+          const curC = byCluster.get(clKey) || {cluster: cl || '—', qty:0, rev:0, offers: new Set()};
+          curC.qty += x.qty;
+          curC.rev += x.rev;
+          curC.offers.add(offer);
+          byCluster.set(clKey, curC);
+
+          // detail totals
+          const key = clKey + '||' + offer;
+          const curD = byDetail.get(key) || {
+            cluster: cl || '—',
+            offer,
+            qty:0,
+            rev:0,
+            stores: new Set(),
+            schemes: new Set()
+          };
+          curD.qty += x.qty;
+          curD.rev += x.rev;
+          curD.stores.add(String(p?._storeName || ''));
+          curD.schemes.add(String(p?._schema || ''));
+          byDetail.set(key, curD);
+        }
+      }
+
+      const clusters = Array.from(byCluster.values()).map(x=>({
+        cluster: x.cluster,
+        qty: x.qty,
+        rev: x.rev,
+        offers: x.offers.size,
+        velocity: daysPeriod ? (x.qty / daysPeriod) : x.qty
+      }));
+      clusters.sort((a,b)=> (b.rev-a.rev) || (b.qty-a.qty));
+
+      const details = Array.from(byDetail.values()).map(x=>({
+        cluster: x.cluster,
+        offer: x.offer,
+        qty: x.qty,
+        rev: x.rev,
+        avgPrice: x.qty ? (x.rev / x.qty) : 0,
+        velocity: daysPeriod ? (x.qty / daysPeriod) : x.qty,
+        stores: Array.from(x.stores).filter(Boolean).join(', '),
+        schemes: Array.from(x.schemes).filter(Boolean).join(', ')
+      }));
+      details.sort((a,b)=> (b.rev-a.rev) || (b.qty-a.qty));
+
+      return {clusters, details};
+    }
+
+    function fmtNum(x, frac=2){
+      const n = Number(x||0);
+      return n.toLocaleString('ru-RU', {maximumFractionDigits: frac});
+    }
+    function fmtRub(x){
+      const n = Number(x||0);
+      return n.toLocaleString('ru-RU', {maximumFractionDigits:0}) + ' ₽';
+    }
+
+    function renderClustersTable(rows){
+      if(!rows.length){
+        clustersWrap.innerHTML = '<div class="muted">Нет данных.</div>';
+        return;
+      }
+      const table = document.createElement('table');
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>Кластер</th>
+            <th class="right">Шт</th>
+            <th class="right">Сумма</th>
+            <th class="right">Скорость (шт/день)</th>
+            <th class="right">Уник. offer_id</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      `;
+      const tb = table.querySelector('tbody');
+      for(const r of rows){
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${escapeHtml(r.cluster)}</td>
+          <td class="right">${fmtNum(r.qty,0)}</td>
+          <td class="right">${fmtRub(r.rev)}</td>
+          <td class="right">${fmtNum(r.velocity,2)}</td>
+          <td class="right">${fmtNum(r.offers,0)}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      clustersWrap.innerHTML = '';
+      clustersWrap.appendChild(table);
+    }
+
+    function renderDetailsTable(rows){
+      if(!rows.length){
+        detailsWrap.innerHTML = '<div class="muted">Нет данных.</div>';
+        return;
+      }
+      const table = document.createElement('table');
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>Кластер</th>
+            <th>offer_id</th>
+            <th class="right">Шт</th>
+            <th class="right">Сумма</th>
+            <th class="right">Средняя цена</th>
+            <th class="right">Скорость (шт/день)</th>
+            <th>Схемы</th>
+            <th>Магазины</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      `;
+      const tb = table.querySelector('tbody');
+      for(const r of rows){
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${escapeHtml(r.cluster)}</td>
+          <td><span class="pill">${escapeHtml(r.offer)}</span></td>
+          <td class="right">${fmtNum(r.qty,0)}</td>
+          <td class="right">${fmtRub(r.rev)}</td>
+          <td class="right">${fmtNum(r.avgPrice,2)}</td>
+          <td class="right">${fmtNum(r.velocity,2)}</td>
+          <td>${escapeHtml(r.schemes || '')}</td>
+          <td>${escapeHtml(r.stores || '')}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      detailsWrap.innerHTML = '';
+      detailsWrap.appendChild(table);
+    }
+
+    async function loadAll(){
+      logBox.innerHTML = '';
+      const stores = loadStores();
+      if(!stores.length){
+        statusText.textContent = 'Нет магазинов. Проверь stores.secrets.js.';
+        return;
+      }
+
+      const fromDay = String(dateFrom.value||'');
+      const toDay   = String(dateTo.value||'');
+      if(!fromDay || !toDay){
+        statusText.textContent = 'Укажи даты.';
+        return;
+      }
+
+      const daysPeriod = daysBetweenInclusive(fromDay, toDay);
+      const offerQ = String(offerFilter.value||'').trim();
+      const mode = String(clusterMode.value||'to');
+
+      const needFBO = !!schFBO.checked;
+      const needFBS = !!schFBS.checked;
+      if(!needFBO && !needFBS){
+        statusText.textContent = 'Выберите хотя бы одну схему (FBO/FBS).';
+        return;
+      }
+
+      const selectedStores = getSelectedStores(stores).filter(st => st && pickStoreAuthHeaders(st));
+      if(!selectedStores.length){
+        statusText.textContent = 'Нет выбранных магазинов с Client-Id/Api-Key.';
+        return;
+      }
+
+      statusText.textContent = 'Загрузка...';
+      summaryBadge.textContent = '';
+
+      const allPostings = [];
+
+      // диапазон ISO (по умолчанию целые дни)
+      const sinceISO0 = fromDay + "T00:00:00.000Z";
+      const toISO0    = toDay   + "T23:59:59.999Z";
+
+      const byDays = !!perDay.checked;
+
+      for(const st of selectedStores){
+        const stName = String(st?.name || st?.id || st?.client_id || st?.clientId || 'store');
+        log('Магазин: ' + stName + ' (схемы: ' + (needFBO?'FBO ':'') + (needFBS?'FBS':'') + ')');
+
+        const schemas = [];
+        if(needFBO) schemas.push('FBO');
+        if(needFBS) schemas.push('FBS');
+
+        for(const schema of schemas){
+          try{
+            if(!byDays){
+              log(schema + ': загружаю...');
+              const arr = await fetchPostingsList(st, schema, sinceISO0, toISO0);
+              for(const p of arr){
+                p._storeName = stName;
+                allPostings.push(p);
+              }
+              log(schema + ': postings: ' + arr.length);
+            } else {
+              let total = 0;
+              for(let d=0; d<daysPeriod; d++){
+                const day = addDaysISO(fromDay, d);
+                const sinceISO = day + "T00:00:00.000Z";
+                const toISO    = day + "T23:59:59.999Z";
+                log(schema + ': день ' + day + '...');
+                const arr = await fetchPostingsList(st, schema, sinceISO, toISO);
+                for(const p of arr){
+                  p._storeName = stName;
+                  allPostings.push(p);
+                }
+                total += arr.length;
+              }
+              log(schema + ': postings всего: ' + total);
+            }
+          } catch(e){
+            log(schema + ': ERROR: ' + (e?.message || String(e)));
+          }
+        }
+      }
+
+      // агрегируем и рисуем
+      const agg = aggregate(allPostings, mode, offerQ, daysPeriod);
+      renderClustersTable(agg.clusters);
+      renderDetailsTable(agg.details);
+
+      const uniqOffers = new Set(agg.details.map(x=>x.offer)).size;
+      const uniqClusters = new Set(agg.clusters.map(x=>normClusterName(x.cluster))).size;
+
+      statusText.textContent =
+        `Готово. Postings: ${allPostings.length}. Период: ~${daysPeriod} дн. Кластер: ${mode==='to'?'cluster_to':'cluster_from'}.`;
+
+      summaryBadge.textContent = `Кластеров: ${uniqClusters} • offer_id: ${uniqOffers} • строк: ${agg.details.length}`;
+    }
+
+    (function boot(){
+      const stores = loadStores();
+      initStoresUI(stores);
+      setDefaultDates();
+
+      loadBtn.addEventListener('click', () => { loadAll(); });
+      // автоподсказка: если пусто - покажем в статусе
+      if(!stores.length){
+        statusText.textContent = 'Нет магазинов. Проверь stores.secrets.js.';
+      }
+    })();
+  </script>
+<script src="stores_runtime.js"></script>
+<script src="nav.js"></script>
+<script src="stores.secrets.js"></script>
+<script src="ozon_storage.js"></script>
+<script src="nav.js"></script>
+<script src="table_sort.js"></script>
+<script src="ozon_prices_detach_patch.js"></script>
+</body>
+</html>

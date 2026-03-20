@@ -1,0 +1,1194 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Кластеры — OZON (API: поставки + остатки + заказы + уходимость + рекомендации)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin:0; background:#f6f7fb; color:#111; }
+    header{ background:#fff; padding:14px 18px; border-bottom:1px solid rgba(0,0,0,.08); display:flex; align-items:center; justify-content:space-between; }
+    .title{ font-weight:700; }
+    main{ padding:16px 18px; max-width:1320px; margin:0 auto; }
+    .card{ background:#fff; border:1px solid rgba(0,0,0,.08); border-radius:12px; padding:14px 14px; margin:12px 0; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .controls{ display:flex; gap:10px; flex-wrap:wrap; align-items:end; }
+    label{ font-size:13px; opacity:.9; display:flex; flex-direction:column; gap:6px; }
+    input, select, button{ padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15); background:#fff; }
+    button{ cursor:pointer; border:1px solid rgba(47,129,247,.35); background:rgba(47,129,247,.12); }
+    button.primary{ background:rgba(47,129,247,.18); border-color:rgba(47,129,247,.45); font-weight:600; }
+    .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .muted{ opacity:.7; font-size:13px; }
+    table{ width:100%; border-collapse:collapse; }
+    th, td{ padding:8px 10px; border-bottom:1px solid rgba(0,0,0,.08); vertical-align:top; }
+    th{ text-align:left; white-space:nowrap; background:rgba(0,0,0,.02); }
+    .right{ text-align:right; }
+    .pill{ display:inline-block; padding:2px 8px; border-radius:999px; background:rgba(47,129,247,.12); border:1px solid rgba(47,129,247,.25); }
+    .log{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px; max-height:240px; overflow:auto; background:rgba(0,0,0,.03); padding:10px; border-radius:10px; }
+    .grid{ display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    .filters{ display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin-top:10px; }
+    .count{ font-size:12px; opacity:.75; }
+    @media (max-width: 980px){ .grid{ grid-template-columns: 1fr; } }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+<header>
+  <div class="title">Кластеры</div>
+  <div class="muted">API: supplies → OZON stock → postings(FBO/FBS) → уходимость → рекомендации</div>
+</header>
+
+<main>
+  <section class="card">
+    <h2 style="margin:0 0 10px;">Настройка подключения к API</h2>
+    <div class="controls">
+      <label>Адрес API
+        <input type="text" id="apiBaseInput" placeholder="Например: http://185.154.193.92:8000" style="min-width:340px;" />
+      </label>
+      <button id="saveApiBaseBtn" class="primary">Сохранить адрес API</button>
+      <button id="resetApiBaseBtn">Сбросить на адрес сайта</button>
+      <button id="testApiBtn">Проверить API</button>
+    </div>
+    <div class="muted" id="apiBaseHint" style="margin-top:10px;">
+      Можно работать без правки HTML: адрес API сохраняется в браузере.
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">0) Статус сервера</h2>
+    <div class="controls">
+      <button id="refreshStateBtn" class="primary">Обновить статус</button>
+    </div>
+    <div id="stateBox" class="muted" style="margin-top:10px;"></div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">1) Поставки (supplies.json) — формируем по API</h2>
+    <div class="controls">
+      <label>Год слота (UTC)
+        <input type="number" id="slotYear" value="" min="2020" max="2100" />
+      </label>
+      <label>Магазины
+        <select id="storesSupplies" multiple size="6" style="min-width:280px;"></select>
+      </label>
+      <label class="row" style="gap:10px; flex-direction:row; margin-bottom:2px;">
+        <span class="muted">Параметры:</span>
+        <label class="row" style="gap:6px; flex-direction:row;"><input type="checkbox" id="incItems" checked> товары (bundle_items)</label>
+        <label class="row" style="gap:6px; flex-direction:row;"><input type="checkbox" id="incClusters" checked> кластеры</label>
+        <label class="row" style="gap:6px; flex-direction:row;"><input type="checkbox" id="excCancelled" checked> исключать CANCELLED</label>
+      </label>
+      <label>Анти-429 min_interval (сек)
+        <input type="number" id="minIntervalSup" value="0.35" step="0.05" min="0" max="3" />
+      </label>
+      <label>Анти-429 bundle_delay (сек)
+        <input type="number" id="bundleDelay" value="0.6" step="0.1" min="0" max="5" />
+      </label>
+      <button id="fetchSuppliesBtn" class="primary">Сформировать supplies.json</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">2) Акты приёмки — загрузка как в исходной версии + подробный лог</h2>
+    <div class="controls">
+      <label>Акты (acceptance-report*.xlsx)
+        <input type="file" id="actsFiles" accept=".xlsx" multiple />
+      </label>
+      <label>Выбрано файлов
+        <input type="number" id="actsBatchSize" value="1" step="1" min="1" max="1" disabled />
+      </label>
+      <label>Endpoint очистки актов
+        <input type="text" id="actsClearEndpoint" value="/api/clear/acts" placeholder="/api/clear/acts" />
+      </label>
+      <label style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="actsClearBeforeUpload" />
+        Перед загрузкой попытаться очистить старые акты
+      </label>
+      <button id="clearActsBtn">Очистить акты</button>
+      <button id="uploadActsBtn" class="primary">Загрузить акты как в исходной версии</button>
+      <div class="muted" style="flex:1 1 100%;">Выбор можно делать пачкой. Загрузка идёт так же, как в первом рабочем файле: все выбранные акты отправляются одним <code>POST /api/upload/acts</code> без переименования и дробления. Кнопка очистки сначала пробует указанный endpoint, затем несколько типовых вариантов и подробно пишет в лог, что именно произошло.</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">3) Остатки на МОЁМ складе (ограничение рекомендаций)</h2>
+    <div class="controls">
+      <label>Файл (CSV/XLSX: offer_id/Артикул + qty/Остаток)
+        <input type="file" id="myStockFile" accept=".csv,.xlsx,.xlsm" />
+      </label>
+      <button id="uploadMyStockBtn" class="primary">Загрузить мой склад</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">3.5) Запланированные поставки (учёт в аналитике)</h2>
+    <div class="controls">
+      <label>Файл (CSV/XLSX: Артикул/offer_id + Кластер/Склад + Количество)
+        <input type="file" id="plannedShipmentsFile" accept=".csv,.xlsx,.xlsm" />
+      </label>
+      <button id="uploadPlannedShipmentsBtn" class="primary">Загрузить план поставок</button>
+      <button id="clearPlannedShipmentsBtn">Очистить план</button>
+    </div>
+    <div class="muted" id="plannedShipmentsSummary" style="margin-top:10px;">
+      Файл не загружен. Поддерживаются колонки: Артикул/offer_id, Кластер/Склад хранения, Количество/В поставке (шт.).
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">4) Остатки OZON — получаем по API</h2>
+    <div class="controls">
+      <label>Магазины
+        <select id="storesOzonStock" multiple size="6" style="min-width:280px;"></select>
+      </label>
+      <label>Анти-429 min_interval (сек)
+        <input type="number" id="minIntervalStock" value="0.35" step="0.05" min="0" max="3" />
+      </label>
+      <button id="fetchOzonStockBtn" class="primary">Получить OZON-остатки</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">5) Заказы по API (FBO + FBS)</h2>
+    <div class="controls">
+      <label>Дата с
+        <input type="date" id="dateFrom" />
+      </label>
+      <label>Дата по
+        <input type="date" id="dateTo" />
+      </label>
+      <label>Магазины (можно несколько)
+        <select id="storesOrders" multiple size="6" style="min-width:280px;"></select>
+      </label>
+      <label>Схемы
+        <div class="row">
+          <label class="row" style="gap:6px; flex-direction:row;"><input type="checkbox" id="schFBO" checked> FBO</label>
+          <label class="row" style="gap:6px; flex-direction:row;"><input type="checkbox" id="schFBS" checked> FBS</label>
+        </div>
+      </label>
+      <label>Анти-429 min_interval (сек)
+        <input type="number" id="minIntervalOrders" value="0.35" step="0.05" min="0" max="3" />
+      </label>
+      <button id="fetchOrdersBtn" class="primary">Подтянуть заказы</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">6) Аналитика и рекомендации</h2>
+    <div class="controls">
+      <label>Спрос по кластерам
+        <select id="mode">
+          <option value="to" selected>cluster_to (куда уехало)</option>
+          <option value="from">cluster_from (откуда отгрузили)</option>
+        </select>
+      </label>
+      <label>Дней покрытия (cover_days)
+        <input type="number" id="coverDays" value="14" min="1" max="120" />
+      </label>
+      <label>Оставить на моём складе не менее
+        <input type="number" id="myStockReserve" value="10" min="0" max="100000" />
+      </label>
+      <button id="analyzeBtn" class="primary">Рассчитать</button>
+      <button id="exportClusterFilesBtn">Скачать файлы по кластерам</button>
+    </div>
+
+    <div class="filters">
+      <label>Фильтр по кластерам
+        <select id="clusterFilter" multiple size="6" style="min-width:320px;"></select>
+      </label>
+      <label>Поиск по кластерам
+        <input type="text" id="clusterSearch" placeholder="Например: Москва, Уфа, Краснодар" />
+      </label>
+      <button id="clearClusterFilterBtn">Сбросить фильтр</button>
+      <div class="count" id="filterSummary">Фильтр не выбран</div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <section class="card">
+      <h2 style="margin:0 0 10px;">Рекомендации (ТОП)</h2>
+      <div id="recsWrap" class="muted">Нет данных.</div>
+    </section>
+
+    <section class="card">
+      <h2 style="margin:0 0 10px;">Спрос (ТОП)</h2>
+      <div id="demandWrap" class="muted">Нет данных.</div>
+    </section>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">Уходимость по offer_id (ТОП по скорости)</h2>
+    <div id="velWrap" class="muted">Нет данных.</div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">Лог</h2>
+    <div class="log" id="log"></div>
+  </section>
+</main>
+
+<script>
+  let API = localStorage.getItem('OZON_API_BASE') || '';
+  let LAST_STATE_ERROR = '';
+
+  function defaultApiBase(){
+    const proto = location.protocol || 'http:';
+    const host = location.hostname || location.host || '';
+    if(host) return `${proto}//${host}:8000`;
+    return location.origin;
+  }
+  let AUTO_DETECTED_API = '';
+  const logEl = document.getElementById('log');
+
+  let lastRecommendations = [];
+  let lastDemand = [];
+  let lastVelocity = [];
+
+  let plannedShipmentsRows = [];
+  let plannedShipmentsMap = new Map();
+
+  function log(msg, obj){
+    const p = document.createElement('div');
+    p.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${msg}` + (obj ? `<pre>${escapeHtml(JSON.stringify(obj, null, 2))}</pre>` : '');
+    logEl.appendChild(p);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function escapeHtml(s){ return String(s).replace(/[&<>"]/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
+
+  function errorText(err){
+    if(err == null) return 'Неизвестная ошибка';
+    if(typeof err === 'string') return err;
+    if(err instanceof Error) return err.message || String(err);
+    if(typeof err === 'object'){
+      if(err.detail){
+        if(typeof err.detail === 'string') return err.detail;
+        try { return JSON.stringify(err.detail, null, 2); } catch(e) {}
+      }
+      try { return JSON.stringify(err, null, 2); } catch(e) {}
+    }
+    return String(err);
+  }
+
+  function selectedIndexes(sel){
+    const vals = Array.from(sel.selectedOptions).map(o=>o.value).filter(v=>v!=="all");
+    if(!vals.length) return "all";
+    return vals.map(v=>Number(v));
+  }
+
+  function normalizeApiBase(v){
+    const s = String(v || '').trim();
+    if(!s) return defaultApiBase();
+    return s.replace(/\/$/, '');
+  }
+
+
+  function defaultApiCandidates(){
+    const candidates = [];
+    const seen = new Set();
+    const push = (v) => {
+      const n = normalizeApiBase(v || '');
+      if(!n || seen.has(n)) return;
+      seen.add(n);
+      candidates.push(n);
+    };
+    const proto = location.protocol || 'http:';
+    const host = location.hostname || location.host || '';
+    const origin = location.origin || '';
+    if(localStorage.getItem('OZON_API_BASE')) push(localStorage.getItem('OZON_API_BASE'));
+    push(origin);
+    if(host) push(`${proto}//${host}:8000`);
+    if(location.port && location.port !== '8000' && host) push(`${proto}//${host}:8000`);
+    return candidates;
+  }
+
+  function looksLikeHtmlResponse(parsed){
+    if(!parsed) return false;
+    const ct = String(parsed.contentType || '').toLowerCase();
+    if(ct.includes('text/html')) return true;
+    const raw = typeof parsed.text === 'string' ? parsed.text : (parsed?.data?.raw || '');
+    const s = String(raw || '').trim().toLowerCase();
+    return s.startsWith('<!doctype html') || s.startsWith('<html');
+  }
+
+  async function probeApiBase(base){
+    const url = normalizeApiBase(base) + '/api/state';
+    try{
+      const r = await fetch(url, { method:'GET' });
+      const parsed = await parseResponse(r);
+      if(!r.ok) return { ok:false, base:normalizeApiBase(base), reason:`HTTP ${r.status}` };
+      if(looksLikeHtmlResponse(parsed)) return { ok:false, base:normalizeApiBase(base), reason:'Получен HTML вместо JSON API' };
+      const data = parsed.data;
+      const looksLikeState = data && typeof data === 'object' && ('stores' in data || 'acts_count' in data || 'my_stock_items' in data);
+      if(!looksLikeState) return { ok:false, base:normalizeApiBase(base), reason:'Ответ не похож на /api/state' };
+      return { ok:true, base:normalizeApiBase(base), data };
+    }catch(e){
+      return { ok:false, base:normalizeApiBase(base), reason:errorText(e) };
+    }
+  }
+
+  async function autoDetectApiBase(logDetails=true){
+    const candidates = defaultApiCandidates();
+    if(logDetails) log('Автопоиск рабочего API...', { candidates });
+    for(const base of candidates){
+      const res = await probeApiBase(base);
+      if(res.ok){
+        AUTO_DETECTED_API = res.base;
+        API = res.base;
+        localStorage.setItem('OZON_API_BASE', API);
+        updateApiHint();
+        if(logDetails) log('Найден рабочий API.', { API, note:'Использую этот адрес для всех запросов.' });
+        return res.data;
+      }
+      if(logDetails) log('Кандидат API не подошёл.', { API: res.base, reason: res.reason });
+    }
+    throw new Error('Не найден рабочий API. Проверьте адрес API. Обычно нужен backend на порту 8000.');
+  }
+
+  function updateApiHint(){
+    apiBaseInput.value = API;
+    apiBaseHint.textContent = 'Текущий API: ' + API;
+  }
+
+  function previewValueForLog(value, maxLen=1200){
+    if(value == null) return value;
+    let s = '';
+    try { s = typeof value === 'string' ? value : JSON.stringify(value, null, 2); }
+    catch(e){ s = String(value); }
+    if(s.length <= maxLen) return s;
+    return s.slice(0, maxLen) + "\n...[truncated]";
+  }
+
+  async function parseResponse(r){
+    const contentType = r.headers.get('content-type') || '';
+    const text = await r.text();
+    let data = null;
+    if(text){
+      if(contentType.includes('application/json')){
+        try { data = JSON.parse(text); } catch(e) { data = {raw:text}; }
+      } else {
+        data = {raw:text};
+      }
+    }
+    return { contentType, text, data };
+  }
+
+  async function apiRequest(method, path, opts={}){
+    const url = API + path;
+    const label = opts.label || `${method} ${path}`;
+    const init = { method, headers: opts.headers || undefined, body: opts.body };
+    if(opts.meta) log(`${label}: начинаю запрос`, opts.meta);
+    else log(`${label}: начинаю запрос`, {method, url});
+    let r;
+    try{
+      r = await fetch(url, init);
+    }catch(e){
+      log(`${label}: ошибка сети/соединения`, {
+        method, url,
+        online: typeof navigator !== 'undefined' ? navigator.onLine : undefined,
+        error: errorText(e)
+      });
+      throw e;
+    }
+    const parsed = await parseResponse(r);
+    log(`${label}: ответ сервера`, {
+      method,
+      url,
+      status: r.status,
+      ok: r.ok,
+      content_type: parsed.contentType || '(empty)',
+      body_preview: previewValueForLog(parsed.data ?? parsed.text ?? null)
+    });
+    if(!r.ok){
+      throw parsed.data || {detail: 'HTTP ' + r.status};
+    }
+    return parsed.data;
+  }
+
+  async function apiGet(path, meta){
+    return await apiRequest('GET', path, {label:`GET ${path}`, meta});
+  }
+  async function apiPostJson(path, body, meta){
+    return await apiRequest('POST', path, {label:`POST ${path}`, headers:{'Content-Type':'application/json'}, body: JSON.stringify(body), meta: meta || body});
+  }
+  async function apiPostForm(path, form, meta){
+    return await apiRequest('POST', path, {label:`POST ${path}`, body: form, meta});
+  }
+  async function apiDelete(path, meta){
+    return await apiRequest('DELETE', path, {label:`DELETE ${path}`, meta});
+  }
+
+  const refreshStateBtn = document.getElementById('refreshStateBtn');
+  const stateBox = document.getElementById('stateBox');
+  stateBox.innerHTML = '<span class="muted">Ожидаю подключение к API…</span>'; 
+  const apiBaseInput = document.getElementById('apiBaseInput');
+  const saveApiBaseBtn = document.getElementById('saveApiBaseBtn');
+  const resetApiBaseBtn = document.getElementById('resetApiBaseBtn');
+  const testApiBtn = document.getElementById('testApiBtn');
+  const apiBaseHint = document.getElementById('apiBaseHint');
+
+  const slotYear = document.getElementById('slotYear');
+  const storesSupplies = document.getElementById('storesSupplies');
+  const storesOzonStock = document.getElementById('storesOzonStock');
+  const storesOrders = document.getElementById('storesOrders');
+
+  const incItems = document.getElementById('incItems');
+  const incClusters = document.getElementById('incClusters');
+  const excCancelled = document.getElementById('excCancelled');
+  const minIntervalSup = document.getElementById('minIntervalSup');
+  const bundleDelay = document.getElementById('bundleDelay');
+  const fetchSuppliesBtn = document.getElementById('fetchSuppliesBtn');
+
+  const actsFiles = document.getElementById('actsFiles');
+  const actsBatchSize = document.getElementById('actsBatchSize');
+  const actsClearEndpoint = document.getElementById('actsClearEndpoint');
+  const actsClearBeforeUpload = document.getElementById('actsClearBeforeUpload');
+  const clearActsBtn = document.getElementById('clearActsBtn');
+  const uploadActsBtn = document.getElementById('uploadActsBtn');
+
+  actsFiles.addEventListener('change', ()=>{ actsBatchSize.value = String((actsFiles.files || []).length || 1); });
+
+  const myStockFile = document.getElementById('myStockFile');
+  const uploadMyStockBtn = document.getElementById('uploadMyStockBtn');
+
+  const plannedShipmentsFile = document.getElementById('plannedShipmentsFile');
+  const uploadPlannedShipmentsBtn = document.getElementById('uploadPlannedShipmentsBtn');
+  const clearPlannedShipmentsBtn = document.getElementById('clearPlannedShipmentsBtn');
+  const plannedShipmentsSummary = document.getElementById('plannedShipmentsSummary');
+
+  const minIntervalStock = document.getElementById('minIntervalStock');
+  const fetchOzonStockBtn = document.getElementById('fetchOzonStockBtn');
+
+  const dateFrom = document.getElementById('dateFrom');
+  const dateTo = document.getElementById('dateTo');
+  const schFBO = document.getElementById('schFBO');
+  const schFBS = document.getElementById('schFBS');
+  const minIntervalOrders = document.getElementById('minIntervalOrders');
+  const fetchOrdersBtn = document.getElementById('fetchOrdersBtn');
+
+  const mode = document.getElementById('mode');
+  const coverDays = document.getElementById('coverDays');
+  const analyzeBtn = document.getElementById('analyzeBtn');
+  const myStockReserve = document.getElementById('myStockReserve');
+  const exportClusterFilesBtn = document.getElementById('exportClusterFilesBtn');
+
+  const clusterFilter = document.getElementById('clusterFilter');
+  const clusterSearch = document.getElementById('clusterSearch');
+  const clearClusterFilterBtn = document.getElementById('clearClusterFilterBtn');
+  const filterSummary = document.getElementById('filterSummary');
+
+  const recsWrap = document.getElementById('recsWrap');
+  const demandWrap = document.getElementById('demandWrap');
+  const velWrap = document.getElementById('velWrap');
+
+  function setDefaultDates(){
+    const now = new Date();
+    const y = now.getFullYear();
+    slotYear.value = y;
+    const d1 = new Date(Date.UTC(y,0,1));
+    dateFrom.value = d1.toISOString().slice(0,10);
+    dateTo.value = now.toISOString().slice(0,10);
+  }
+
+  function fillStores(sel, stores){
+    sel.innerHTML = '';
+    const optAll = document.createElement('option'); optAll.value='all'; optAll.textContent='Все магазины';
+    sel.appendChild(optAll);
+    stores.forEach((s, i)=>{
+      const o = document.createElement('option');
+      o.value = String(i);
+      o.textContent = s.name || ('Магазин ' + (i+1));
+      sel.appendChild(o);
+    });
+    sel.options[0].selected = true;
+  }
+
+  function collectClusters(){
+    const clusters = new Set();
+    for(const row of lastRecommendations){ if(row?.cluster) clusters.add(String(row.cluster)); }
+    for(const row of lastDemand){ if(row?.cluster) clusters.add(String(row.cluster)); }
+    for(const row of lastVelocity){ if(row?.cluster) clusters.add(String(row.cluster)); }
+    return Array.from(clusters).sort((a,b)=>a.localeCompare(b,'ru'));
+  }
+
+  function populateClusterFilter(preserve=true){
+    const prev = preserve ? new Set(Array.from(clusterFilter.selectedOptions).map(o=>o.value)) : new Set();
+    const search = (clusterSearch.value || '').trim().toLowerCase();
+    const visible = collectClusters().filter(x => !search || x.toLowerCase().includes(search));
+
+    clusterFilter.innerHTML = '';
+    for(const cl of visible){
+      const o = document.createElement('option');
+      o.value = cl;
+      o.textContent = cl;
+      if(prev.has(cl)) o.selected = true;
+      clusterFilter.appendChild(o);
+    }
+    updateFilterSummary();
+  }
+
+  function getSelectedClusters(){
+    return new Set(Array.from(clusterFilter.selectedOptions).map(o=>o.value));
+  }
+
+  function filterByClusters(rows){
+    const selected = getSelectedClusters();
+    if(!selected.size) return rows;
+    return rows.filter(r => selected.has(String(r.cluster || '')));
+  }
+
+  function updateFilterSummary(){
+    const selected = Array.from(clusterFilter.selectedOptions).map(o=>o.value);
+    if(!selected.length){
+      filterSummary.textContent = 'Фильтр не выбран';
+    } else if(selected.length <= 3){
+      filterSummary.textContent = 'Выбрано: ' + selected.join(', ');
+    } else {
+      filterSummary.textContent = 'Выбрано кластеров: ' + selected.length;
+    }
+  }
+
+  function normalizeLookup(v){
+    return String(v == null ? '' : v).trim().toLowerCase();
+  }
+
+  function normalizeOffer(v){
+    return normalizeLookup(v).replace(/\s+/g, '');
+  }
+
+  function normalizeCluster(v){
+    return normalizeLookup(v).replace(/\s+/g, ' ');
+  }
+
+  function safeNumber(v){
+    if(v == null || v === '') return 0;
+    if(typeof v === 'number') return Number.isFinite(v) ? v : 0;
+    const s = String(v).replace(/\s+/g, '').replace(',', '.');
+    const n = Number(s);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function plannedKey(offerId, cluster){
+    return normalizeOffer(offerId) + '||' + normalizeCluster(cluster);
+  }
+
+  function findHeaderIndex(headers, aliases){
+    const normalized = headers.map(normalizeLookup);
+    for(const alias of aliases){
+      const idx = normalized.indexOf(normalizeLookup(alias));
+      if(idx >= 0) return idx;
+    }
+    return -1;
+  }
+
+  function parseCsvText(text){
+    const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).filter(line => line.trim() !== '');
+    if(!lines.length) return [];
+    const candidates = [';', '\t', ','];
+    const sample = lines[0];
+    const delimiter = candidates
+      .map(d => ({d, count: sample.split(d).length}))
+      .sort((a,b) => b.count - a.count)[0].d;
+
+    return lines.map(line => line.split(delimiter).map(cell => String(cell).trim()));
+  }
+
+  function extractPlannedRows(matrix){
+    if(!matrix || !matrix.length) return [];
+    const headers = (matrix[0] || []).map(v => String(v == null ? '' : v).trim());
+    const offerIdx = findHeaderIndex(headers, ['Артикул', 'offer_id', 'Offer ID', 'offer id', 'Seller SKU', 'seller_sku', 'vendor_code', 'OzonID', 'Ozon ID']);
+    const clusterIdx = findHeaderIndex(headers, ['Кластер', 'cluster', 'Cluster', 'Склад хранения', 'Склад', 'warehouse', 'cluster_to']);
+    const qtyIdx = findHeaderIndex(headers, ['Количество', 'qty', 'quantity', 'Qty', 'В поставке (шт.)', 'В поставке', 'шт.']);
+
+    if(offerIdx < 0 || clusterIdx < 0 || qtyIdx < 0){
+      throw new Error('Не найдены нужные колонки. Нужны Артикул/offer_id, Кластер/Склад хранения и Количество/В поставке (шт.).');
+    }
+
+    const rows = [];
+    for(let i = 1; i < matrix.length; i++){
+      const row = matrix[i] || [];
+      const offerId = String(row[offerIdx] == null ? '' : row[offerIdx]).trim();
+      const cluster = String(row[clusterIdx] == null ? '' : row[clusterIdx]).trim();
+      const qty = safeNumber(row[qtyIdx]);
+      if(!offerId || !cluster || !qty) continue;
+      rows.push({ offer_id: offerId, cluster, qty });
+    }
+    return rows;
+  }
+
+  function rebuildPlannedShipmentsMap(rows){
+    plannedShipmentsMap = new Map();
+    for(const row of rows){
+      const key = plannedKey(row.offer_id, row.cluster);
+      plannedShipmentsMap.set(key, (plannedShipmentsMap.get(key) || 0) + safeNumber(row.qty));
+    }
+  }
+
+  function updatePlannedShipmentsSummary(){
+    if(!plannedShipmentsRows.length){
+      plannedShipmentsSummary.textContent = 'Файл не загружен. Поддерживаются колонки: Артикул/offer_id, Кластер/Склад хранения, Количество/В поставке (шт.).';
+      return;
+    }
+    const totalQty = plannedShipmentsRows.reduce((acc, row) => acc + safeNumber(row.qty), 0);
+    plannedShipmentsSummary.textContent = `Загружено строк: ${plannedShipmentsRows.length} | уникальных связок offer_id+cluster: ${plannedShipmentsMap.size} | всего запланировано: ${totalQty} шт.`;
+  }
+
+  function getPlannedQty(offerId, cluster){
+    return plannedShipmentsMap.get(plannedKey(offerId, cluster)) || 0;
+  }
+
+  function enrichRecommendationRows(rows){
+    return (rows || []).map(row => {
+      const plannedQty = getPlannedQty(row.offer_id, row.cluster);
+      const hasCurrent = row.current_ozon !== null && row.current_ozon !== undefined && row.current_ozon !== '';
+      const currentOzon = safeNumber(row.current_ozon);
+      const ozonPlusPlanned = hasCurrent ? (currentOzon + plannedQty) : (plannedQty ? plannedQty : null);
+      const avgDaily = safeNumber(row.avg_daily);
+      return {
+        ...row,
+        planned_qty: plannedQty,
+        ozon_plus_planned: ozonPlusPlanned,
+        recommended_with_planned: Math.max(0, safeNumber(row.recommended) - plannedQty),
+        recommended_capped_with_planned: Math.max(0, safeNumber(row.recommended_capped) - plannedQty),
+        days_cover_with_planned: avgDaily > 0 && ozonPlusPlanned != null ? (ozonPlusPlanned / avgDaily) : null
+      };
+    });
+  }
+
+  function enrichVelocityRows(rows){
+    return (rows || []).map(row => {
+      const plannedQty = getPlannedQty(row.offer_id, row.cluster);
+      const hasCurrent = row.current_ozon !== null && row.current_ozon !== undefined && row.current_ozon !== '';
+      const currentOzon = safeNumber(row.current_ozon);
+      return {
+        ...row,
+        planned_qty: plannedQty,
+        ozon_plus_planned: hasCurrent ? (currentOzon + plannedQty) : (plannedQty ? plannedQty : null)
+      };
+    });
+  }
+
+  async function loadPlannedShipmentsFile(file){
+    const name = String(file?.name || '').toLowerCase();
+    let matrix = [];
+
+    if(name.endsWith('.csv')){
+      const text = await file.text();
+      matrix = parseCsvText(text);
+    } else {
+      if(typeof XLSX === 'undefined'){
+        throw new Error('Библиотека для чтения XLSX не загрузилась. Проверьте доступ к CDN или используйте CSV.');
+      }
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, {type:'array'});
+      const sheetName = wb.SheetNames[0];
+      const sheet = wb.Sheets[sheetName];
+      matrix = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
+    }
+
+    plannedShipmentsRows = extractPlannedRows(matrix);
+    rebuildPlannedShipmentsMap(plannedShipmentsRows);
+    updatePlannedShipmentsSummary();
+    rerenderAllTables();
+
+    const clusters = Array.from(new Set(plannedShipmentsRows.map(r => r.cluster))).sort((a,b)=>a.localeCompare(b,'ru'));
+    log('План поставок загружен.', {
+      rows: plannedShipmentsRows.length,
+      unique_offer_cluster_pairs: plannedShipmentsMap.size,
+      clusters_preview: clusters.slice(0, 15)
+    });
+  }
+
+  function clearPlannedShipments(){
+    plannedShipmentsRows = [];
+    plannedShipmentsMap = new Map();
+    if(plannedShipmentsFile) plannedShipmentsFile.value = '';
+    updatePlannedShipmentsSummary();
+    rerenderAllTables();
+  }
+
+  function renderRecs(rows){
+    if(!rows || !rows.length){ recsWrap.innerHTML = '<div class="muted">Нет данных.</div>'; return; }
+    const filtered = filterByClusters(rows);
+    if(!filtered.length){ recsWrap.innerHTML = '<div class="muted">По выбранным кластерам данных нет.</div>'; return; }
+
+    const top = enrichRecommendationRows(filtered).slice(0, 200);
+    const table = document.createElement('table');
+    table.innerHTML = `
+      <thead><tr>
+        <th>Кластер</th><th>offer_id</th>
+        <th class="right">Ср/день</th>
+        <th class="right">Остаток OZON</th>
+        <th class="right">План. поставки</th>
+        <th class="right">OZON + план</th>
+        <th class="right">Реком.</th>
+        <th class="right">Реком. c планом</th>
+        <th class="right">Реком. (мой склад)</th>
+        <th class="right">Мой склад c планом</th>
+        <th>Окно</th>
+      </tr></thead><tbody></tbody>`;
+    const tb = table.querySelector('tbody');
+    for(const r of top){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${escapeHtml(r.cluster)}</td>
+        <td><span class="pill">${escapeHtml(r.offer_id)}</span></td>
+        <td class="right">${Number(r.avg_daily||0).toFixed(3)}</td>
+        <td class="right">${r.current_ozon==null ? '—' : escapeHtml(String(r.current_ozon))}</td>
+        <td class="right">${escapeHtml(String(r.planned_qty || 0))}</td>
+        <td class="right">${r.ozon_plus_planned==null ? '—' : escapeHtml(String(r.ozon_plus_planned))}</td>
+        <td class="right">${escapeHtml(String(r.recommended ?? ''))}</td>
+        <td class="right">${escapeHtml(String(r.recommended_with_planned ?? ''))}</td>
+        <td class="right">${escapeHtml(String(r.recommended_capped ?? ''))}</td>
+        <td class="right"><strong>${escapeHtml(String(r.recommended_capped_with_planned ?? ''))}</strong></td>
+        <td>${escapeHtml((r.first_inflow_date||'') + ' → ' + (r.last_depletion_date||'…'))}</td>`;
+      tb.appendChild(tr);
+    }
+    recsWrap.innerHTML = `<div class="count" style="margin-bottom:8px;">Показано ${top.length} из ${filtered.length}. План поставок учитывается локально в браузере.</div>`;
+    recsWrap.appendChild(table);
+  }
+
+  function renderDemand(rows){
+    if(!rows || !rows.length){ demandWrap.innerHTML = '<div class="muted">Нет данных.</div>'; return; }
+    const filtered = filterByClusters(rows);
+    if(!filtered.length){ demandWrap.innerHTML = '<div class="muted">По выбранным кластерам данных нет.</div>'; return; }
+
+    const top = filtered.slice(0, 200).map(r => ({...r, planned_qty: getPlannedQty(r.offer_id, r.cluster)}));
+    const table = document.createElement('table');
+    table.innerHTML = `<thead><tr><th>Кластер</th><th>offer_id</th><th class="right">Доставлено (шт.)</th><th class="right">План. поставки</th></tr></thead><tbody></tbody>`;
+    const tb = table.querySelector('tbody');
+    for(const r of top){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${escapeHtml(r.cluster)}</td><td><span class="pill">${escapeHtml(r.offer_id)}</span></td><td class="right">${escapeHtml(String(r.delivered_qty))}</td><td class="right">${escapeHtml(String(r.planned_qty || 0))}</td>`;
+      tb.appendChild(tr);
+    }
+    demandWrap.innerHTML = `<div class="count" style="margin-bottom:8px;">Показано ${top.length} из ${filtered.length}</div>`;
+    demandWrap.appendChild(table);
+  }
+
+  function renderVelocity(rows){
+    if(!rows || !rows.length){ velWrap.innerHTML = '<div class="muted">Нет данных.</div>'; return; }
+    const filtered = filterByClusters(rows);
+    if(!filtered.length){ velWrap.innerHTML = '<div class="muted">По выбранным кластерам данных нет.</div>'; return; }
+
+    const top = enrichVelocityRows(filtered).slice(0, 300);
+    const table = document.createElement('table');
+    table.innerHTML = `
+      <thead><tr>
+        <th>Кластер</th><th>offer_id</th>
+        <th>Поступление</th><th>Окончание</th>
+        <th class="right">Скорость</th><th class="right">Продано</th><th class="right">Дней</th>
+        <th class="right">Остаток OZON</th><th class="right">План. поставки</th><th class="right">OZON + план</th>
+      </tr></thead><tbody></tbody>`;
+    const tb = table.querySelector('tbody');
+    for(const r of top){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${escapeHtml(r.cluster)}</td>
+        <td><span class="pill">${escapeHtml(r.offer_id)}</span></td>
+        <td>${escapeHtml(r.first_inflow_date || '')}</td>
+        <td>${escapeHtml(r.last_depletion_date || '…')}</td>
+        <td class="right">${Number(r.avg_daily||0).toFixed(3)}</td>
+        <td class="right">${escapeHtml(String(r.total_sold||0))}</td>
+        <td class="right">${escapeHtml(String(r.total_days||0))}</td>
+        <td class="right">${r.current_ozon==null ? '—' : escapeHtml(String(r.current_ozon))}</td>
+        <td class="right">${escapeHtml(String(r.planned_qty || 0))}</td>
+        <td class="right">${r.ozon_plus_planned==null ? '—' : escapeHtml(String(r.ozon_plus_planned))}</td>`;
+      tb.appendChild(tr);
+    }
+    velWrap.innerHTML = `<div class="count" style="margin-bottom:8px;">Показано ${top.length} из ${filtered.length}</div>`;
+    velWrap.appendChild(table);
+  }
+
+  function rerenderAllTables(){
+    renderRecs(lastRecommendations);
+    renderDemand(lastDemand);
+    renderVelocity(lastVelocity);
+  }
+
+  async function refreshState(){
+    try{
+      const st = await apiGet('/api/state');
+      LAST_STATE_ERROR = '';
+      stateBox.textContent =
+        `stores: ${st.stores?.length||0} | supplies: ${st.supplies_meta? 'OK' : 'нет'} | акты: ${st.acts_count||0} | мой склад: ${st.my_stock_items||0} | ozon clusters: ${st.ozon_stock_clusters||0} | orders_cache: ${st.last_orders_fetch? 'OK' : 'нет'} | план поставок (локально): ${plannedShipmentsRows.length||0}`;
+
+      fillStores(storesSupplies, st.stores||[]);
+      fillStores(storesOzonStock, st.stores||[]);
+      fillStores(storesOrders, st.stores||[]);
+      return st;
+    }catch(e){
+      LAST_STATE_ERROR = errorText(e);
+      storesSupplies.innerHTML = '';
+      storesOzonStock.innerHTML = '';
+      storesOrders.innerHTML = '';
+      stateBox.innerHTML = `<span style="color:#b00020;font-weight:600;">API недоступен или указан неверно.</span><br><span class="muted">Текущий адрес: ${escapeHtml(API)}</span><br><span class="muted">Обычно нужен backend на порту 8000.</span><br><span class="muted">Ошибка: ${escapeHtml(LAST_STATE_ERROR)}</span>`;
+      throw e;
+    }
+  }
+
+  saveApiBaseBtn.addEventListener('click', async ()=>{
+    API = normalizeApiBase(apiBaseInput.value);
+    localStorage.setItem('OZON_API_BASE', API);
+    updateApiHint();
+    log('Адрес API сохранён.', {API});
+    try{ await refreshState(); }catch(e){ log('Проверка после сохранения не прошла: ' + errorText(e)); }
+  });
+
+  resetApiBaseBtn.addEventListener('click', ()=>{
+    localStorage.removeItem('OZON_API_BASE');
+    API = '';
+    try{
+      await autoDetectApiBase(true);
+    }catch(e){
+      updateApiHint();
+      log('Не удалось автоопределить API после сброса: ' + errorText(e));
+    }
+  });
+
+  testApiBtn.addEventListener('click', async ()=>{
+    try{
+      API = normalizeApiBase(apiBaseInput.value || API);
+      const probe = await probeApiBase(API);
+      if(!probe.ok) throw new Error(probe.reason || 'API не прошёл проверку');
+      localStorage.setItem('OZON_API_BASE', API);
+      updateApiHint();
+      log('Проверка API успешна.', probe.data);
+    }catch(e){
+      log('Ошибка проверки API: ' + errorText(e));
+    }
+  });
+
+  refreshStateBtn.addEventListener('click', ()=> refreshState().then(()=>log('Статус обновлён.')).catch(e=>log('Ошибка: '+errorText(e))));
+
+  fetchSuppliesBtn.addEventListener('click', async ()=>{
+    try{
+      const body = {
+        year: Number(slotYear.value),
+        store: selectedIndexes(storesSupplies),
+        include_items: incItems.checked,
+        include_clusters: incClusters.checked,
+        exclude_cancelled: excCancelled.checked,
+        min_interval: Number(minIntervalSup.value||0.35),
+        bundle_delay: Number(bundleDelay.value||0.6),
+      };
+      log('Формирую supplies.json...', body);
+      const r = await apiPostJson('/api/fetch/supplies', body);
+      log('supplies OK', r);
+      await refreshState();
+    }catch(e){
+      log('Ошибка fetch/supplies: ' + (errorText(e)));
+    }
+  });
+
+  async function getStateSafe(tag){
+    try{
+      const st = await apiGet('/api/state', { action: tag || 'state_snapshot' });
+      return st;
+    }catch(e){
+      log('Не удалось получить /api/state: ' + errorText(e));
+      return null;
+    }
+  }
+
+  async function clearActsWithProbe(){
+    const typed = String(actsClearEndpoint.value || '').trim();
+    const candidates = [];
+    const addCandidate = (method, path, body)=>{
+      const key = `${method} ${path} ${JSON.stringify(body||null)}`;
+      if(path && !candidates.some(x => `${x.method} ${x.path} ${JSON.stringify(x.body||null)}` === key)) candidates.push({method, path, body});
+    };
+
+    if(typed){
+      addCandidate('POST', typed, {});
+      addCandidate('DELETE', typed);
+    }
+    addCandidate('POST', '/api/clear/acts', {});
+    addCandidate('DELETE', '/api/clear/acts');
+    addCandidate('POST', '/api/acts/clear', {});
+    addCandidate('DELETE', '/api/acts/clear');
+    addCandidate('POST', '/api/acts/reset', {});
+    addCandidate('DELETE', '/api/acts/reset');
+    addCandidate('POST', '/api/reset/acts', {});
+    addCandidate('DELETE', '/api/reset/acts');
+    addCandidate('POST', '/api/upload/acts/clear', {});
+    addCandidate('DELETE', '/api/upload/acts/clear');
+    addCandidate('POST', '/api/upload/acts/reset', {});
+    addCandidate('DELETE', '/api/upload/acts/reset');
+    addCandidate('POST', '/api/upload/acts/delete_all', {});
+    addCandidate('DELETE', '/api/upload/acts/delete_all');
+    addCandidate('POST', '/api/acts/delete_all', {});
+    addCandidate('DELETE', '/api/acts/delete_all');
+    addCandidate('POST', '/api/admin/acts/clear', {});
+    addCandidate('DELETE', '/api/admin/acts/clear');
+
+    const before = await getStateSafe('before_clear_acts');
+    log('Очистка актов: пробую найти рабочий endpoint...', {
+      acts_before: before ? { acts_count: before.acts_count, acts_dedup_hashes: before.acts_dedup_hashes, acts_dedup_supply_ids: before.acts_dedup_supply_ids } : null,
+      candidates
+    });
+    for(const c of candidates){
+      try{
+        const meta = { action:'clear_acts_probe', method:c.method, path:c.path, body:c.body || null };
+        const r = c.method === 'DELETE'
+          ? await apiDelete(c.path, meta)
+          : await apiPostJson(c.path, c.body || {}, meta);
+        log(`Очистка актов выполнена: ${c.method} ${c.path}`, r);
+        const after = await getStateSafe('after_clear_acts');
+        log('Состояние после очистки актов', after ? {
+          acts_count: after.acts_count,
+          acts_dedup_hashes: after.acts_dedup_hashes,
+          acts_dedup_supply_ids: after.acts_dedup_supply_ids
+        } : null);
+        await refreshState().catch(()=>{});
+        return {method:c.method, path:c.path, response:r, before, after};
+      }catch(e){
+        log(`Очистка актов не прошла: ${c.method} ${c.path}`, { error: errorText(e), body: c.body || null });
+      }
+    }
+    throw new Error('Не найден рабочий endpoint очистки актов. Нужен точный backend путь.');
+  }
+
+  clearActsBtn.addEventListener('click', async ()=>{
+    const originalBtnText = clearActsBtn.textContent;
+    clearActsBtn.disabled = true;
+    try{
+      await clearActsWithProbe();
+    }catch(e){
+      log('Очистить акты автоматически не удалось: ' + errorText(e));
+    }finally{
+      clearActsBtn.disabled = false;
+      clearActsBtn.textContent = originalBtnText;
+    }
+  });
+
+  uploadActsBtn.addEventListener('click', async ()=>{
+    try{
+      const files = Array.from(actsFiles.files || []);
+      if(!files.length){ log('Выберите файлы актов.'); return; }
+
+      const before = await getStateSafe('before_upload_acts');
+      log('Состояние перед загрузкой актов', before ? {
+        acts_count: before.acts_count,
+        acts_dedup_hashes: before.acts_dedup_hashes,
+        acts_dedup_supply_ids: before.acts_dedup_supply_ids
+      } : null);
+
+      if(actsClearBeforeUpload.checked){
+        log('Перед загрузкой включена попытка очистки старых актов.');
+        await clearActsWithProbe();
+      }
+
+      const f = new FormData();
+      const fileInfos = files.map(x => ({
+        name: x.name,
+        size_bytes: x.size,
+        size_mb: Number((x.size / (1024*1024)).toFixed(3)),
+        type: x.type || '(empty)',
+        last_modified: x.lastModified ? new Date(x.lastModified).toISOString() : null,
+      }));
+      for(const x of files) f.append('files', x);
+
+      log('Собран FormData для загрузки актов', {
+        total_files: files.length,
+        total_size_bytes: files.reduce((a,x)=>a + (x.size || 0), 0),
+        total_size_mb: Number((files.reduce((a,x)=>a + (x.size || 0), 0) / (1024*1024)).toFixed(3)),
+        mode: 'single_request_with_all_selected_files',
+        field_name: 'files',
+        files: fileInfos,
+      });
+
+      const r = await apiPostForm('/api/upload/acts', f, {
+        action: 'upload_acts_original_mode',
+        total_files: files.length,
+        total_size_bytes: files.reduce((a,x)=>a + (x.size || 0), 0),
+        file_names: files.map(x => x.name),
+      });
+      log('acts upload OK', r);
+      const after = await getStateSafe('after_upload_acts');
+      log('Состояние после загрузки актов', after ? {
+        acts_count: after.acts_count,
+        acts_dedup_hashes: after.acts_dedup_hashes,
+        acts_dedup_supply_ids: after.acts_dedup_supply_ids
+      } : null);
+      await refreshState();
+    }catch(e){
+      log('Ошибка upload/acts: ' + (errorText(e)));
+      const afterErr = await getStateSafe('after_upload_acts_error');
+      if(afterErr) log('Состояние после ошибки upload/acts', {
+        acts_count: afterErr.acts_count,
+        acts_dedup_hashes: afterErr.acts_dedup_hashes,
+        acts_dedup_supply_ids: afterErr.acts_dedup_supply_ids
+      });
+    }
+  });
+
+  uploadMyStockBtn.addEventListener('click', async ()=>{
+    try{
+      if(!myStockFile.files[0]){ log('Выберите файл остатков.'); return; }
+      const f = new FormData();
+      f.append('file', myStockFile.files[0]);
+      log('Загружаю мой склад...');
+      const r = await apiPostForm('/api/upload/my_stock', f);
+      log('my_stock OK', r);
+      await refreshState();
+    }catch(e){
+      log('Ошибка my_stock: ' + (errorText(e)));
+    }
+  });
+
+  uploadPlannedShipmentsBtn.addEventListener('click', async ()=>{
+    try{
+      if(!plannedShipmentsFile.files[0]){ log('Выберите файл плана поставок.'); return; }
+      await loadPlannedShipmentsFile(plannedShipmentsFile.files[0]);
+      await refreshState();
+    }catch(e){
+      log('Ошибка загрузки плана поставок: ' + errorText(e));
+    }
+  });
+
+  clearPlannedShipmentsBtn.addEventListener('click', async ()=>{
+    clearPlannedShipments();
+    log('План поставок очищен.');
+    await refreshState().catch(()=>{});
+  });
+
+  fetchOzonStockBtn.addEventListener('click', async ()=>{
+    try{
+      const body = { store: selectedIndexes(storesOzonStock), min_interval: Number(minIntervalStock.value||0.35) };
+      log('Тяну OZON-остатки...', body);
+      const r = await apiPostJson('/api/fetch/ozon_stock', body);
+      log('ozon_stock OK', r);
+      await refreshState();
+    }catch(e){
+      log('Ошибка ozon_stock: ' + (errorText(e)));
+    }
+  });
+
+  fetchOrdersBtn.addEventListener('click', async ()=>{
+    try{
+      const schemas = [];
+      if(schFBO.checked) schemas.push('FBO');
+      if(schFBS.checked) schemas.push('FBS');
+      const body = {
+        date_from: dateFrom.value,
+        date_to: dateTo.value,
+        schemas,
+        store: selectedIndexes(storesOrders),
+        min_interval: Number(minIntervalOrders.value||0.35),
+      };
+      log('Тяну postings...', body);
+      const r = await apiPostJson('/api/fetch/postings', body);
+      log('postings OK', r);
+      await refreshState();
+    }catch(e){
+      log('Ошибка postings: ' + (errorText(e)));
+    }
+  });
+
+  analyzeBtn.addEventListener('click', async ()=>{
+    try{
+      const body = { date_from: dateFrom.value, date_to: dateTo.value, mode: mode.value, cover_days: Number(coverDays.value||14), my_stock_reserve: Number(myStockReserve.value||0) };
+      log('Считаю аналитику...', body);
+      const r = await apiPostJson('/api/analyze', body);
+      log('analysis OK', {meta:r.meta, postings_count:r.postings_count, velocity_count:r.velocity_count, recommendations_count:r.recommendations_count, planned_shipments_loaded: plannedShipmentsRows.length});
+
+      lastRecommendations = r.recommendations || [];
+      lastDemand = r.demand_top || [];
+      lastVelocity = r.velocity_rows || [];
+
+      populateClusterFilter(false);
+      rerenderAllTables();
+    }catch(e){
+      log('Ошибка analyze: ' + (errorText(e)));
+    }
+  });
+
+  clusterFilter.addEventListener('change', ()=>{
+    updateFilterSummary();
+    rerenderAllTables();
+  });
+
+  clusterSearch.addEventListener('input', ()=>{
+    populateClusterFilter(true);
+  });
+
+  clearClusterFilterBtn.addEventListener('click', ()=>{
+    clusterSearch.value = '';
+    populateClusterFilter(false);
+    rerenderAllTables();
+  });
+
+
+  exportClusterFilesBtn.addEventListener('click', async ()=>{
+    try{
+      const body = {
+        date_from: dateFrom.value,
+        date_to: dateTo.value,
+        cover_days: Number(coverDays.value||14),
+        my_stock_reserve: Number(myStockReserve.value||0)
+      };
+      log('Готовлю ZIP по кластерам...', body);
+
+      const r = await fetch(API + '/api/export/cluster_files', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      });
+
+      if(!r.ok){
+        let msg = 'HTTP ' + r.status;
+        try{
+          const j = await r.json();
+          msg = j?.detail || msg;
+        }catch(e){}
+        throw new Error(msg);
+      }
+
+      const blob = await r.blob();
+      const disposition = r.headers.get('Content-Disposition') || '';
+      let filename = 'cluster_files.zip';
+      const m = disposition.match(/filename="?([^"]+)"?/i);
+      if(m && m[1]) filename = m[1];
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      log('ZIP по кластерам готов.', {filename});
+    }catch(e){
+      log('Ошибка export/cluster_files: ' + (errorText(e)));
+    }
+  });
+
+
+  (async function boot(){
+    setDefaultDates();
+    updatePlannedShipmentsSummary();
+    try{
+      API = normalizeApiBase(API || defaultApiBase());
+      updateApiHint();
+      const probe = await probeApiBase(API);
+      if(!probe.ok){
+        log('Сохранённый адрес API не подошёл. Ищу рабочий автоматически...', { API, reason: probe.reason });
+        await autoDetectApiBase(true);
+      } else {
+        AUTO_DETECTED_API = API;
+        localStorage.setItem('OZON_API_BASE', API);
+        updateApiHint();
+      }
+      await refreshState();
+    }catch(e){
+      const fallback = defaultApiBase();
+      if(normalizeApiBase(API) !== normalizeApiBase(fallback)){
+        API = normalizeApiBase(fallback);
+        localStorage.setItem('OZON_API_BASE', API);
+        updateApiHint();
+      }
+      stateBox.innerHTML = `<span style="color:#b00020;font-weight:600;">Ничего не загружено, потому что страница не подключилась к API.</span><br><span class="muted">Проверьте адрес API. Рекомендуемый адрес: ${escapeHtml(defaultApiBase())}</span><br><span class="muted">Ошибка: ${escapeHtml(errorText(e))}</span>`;
+      log('Ошибка: ' + errorText(e));
+    }
+  })();
+</script>
+</body>
+</html>

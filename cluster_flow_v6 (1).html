@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Кластеры — OZON (API: поставки + остатки + заказы + уходимость + рекомендации)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin:0; background:#f6f7fb; color:#111; }
+    header{ background:#fff; padding:14px 18px; border-bottom:1px solid rgba(0,0,0,.08); display:flex; align-items:center; justify-content:space-between; }
+    .title{ font-weight:700; }
+    main{ padding:16px 18px; max-width:1320px; margin:0 auto; }
+    .card{ background:#fff; border:1px solid rgba(0,0,0,.08); border-radius:12px; padding:14px 14px; margin:12px 0; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .controls{ display:flex; gap:10px; flex-wrap:wrap; align-items:end; }
+    label{ font-size:13px; opacity:.9; display:flex; flex-direction:column; gap:6px; }
+    input, select, button{ padding:8px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.15); background:#fff; }
+    button{ cursor:pointer; border:1px solid rgba(47,129,247,.35); background:rgba(47,129,247,.12); }
+    button.primary{ background:rgba(47,129,247,.18); border-color:rgba(47,129,247,.45); font-weight:600; }
+    .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .muted{ opacity:.7; font-size:13px; }
+    table{ width:100%; border-collapse:collapse; }
+    th, td{ padding:8px 10px; border-bottom:1px solid rgba(0,0,0,.08); vertical-align:top; }
+    th{ text-align:left; white-space:nowrap; background:rgba(0,0,0,.02); }
+    .right{ text-align:right; }
+    .pill{ display:inline-block; padding:2px 8px; border-radius:999px; background:rgba(47,129,247,.12); border:1px solid rgba(47,129,247,.25); }
+    .log{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px; max-height:240px; overflow:auto; background:rgba(0,0,0,.03); padding:10px; border-radius:10px; }
+    .grid{ display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    .filters{ display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin-top:10px; }
+    .count{ font-size:12px; opacity:.75; }
+    @media (max-width: 980px){ .grid{ grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<header>
+  <div class="title">Кластеры</div>
+  <div class="muted">API: supplies → OZON stock → postings(FBO/FBS) → уходимость → рекомендации</div>
+</header>
+
+<main>
+  <section class="card">
+    <h2 style="margin:0 0 10px;">0) Статус сервера</h2>
+    <div class="controls">
+      <button id="refreshStateBtn" class="primary">Обновить статус</button>
+    </div>
+    <div id="stateBox" class="muted" style="margin-top:10px;"></div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">1) Поставки (supplies.json) — формируем по API</h2>
+    <div class="controls">
+      <label>Год слота (UTC)
+        <input type="number" id="slotYear" value="" min="2020" max="2100" />
+      </label>
+      <label>Магазины
+        <select id="storesSupplies" multiple size="6" style="min-width:280px;"></select>
+      </label>
+      <label class="row" style="gap:10px; flex-direction:row; margin-bottom:2px;">
+        <span class="muted">Параметры:</span>
+        <label class="row" style="gap:6px; flex-direction:row;"><input type="checkbox" id="incItems" checked> товары (bundle_items)</label>
+        <label class="row" style="gap:6px; flex-direction:row;"><input type="checkbox" id="incClusters" checked> кластеры</label>
+        <label class="row" style="gap:6px; flex-direction:row;"><input type="checkbox" id="excCancelled" checked> исключать CANCELLED</label>
+      </label>
+      <label>Анти-429 min_interval (сек)
+        <input type="number" id="minIntervalSup" value="0.35" step="0.05" min="0" max="3" />
+      </label>
+      <label>Анти-429 bundle_delay (сек)
+        <input type="number" id="bundleDelay" value="0.6" step="0.1" min="0" max="5" />
+      </label>
+      <button id="fetchSuppliesBtn" class="primary">Сформировать supplies.json</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">2) Акты приёмки — загрузка пачкой (без дублей)</h2>
+    <div class="controls">
+      <label>Акты (acceptance-report*.xlsx)
+        <input type="file" id="actsFiles" accept=".xlsx" multiple />
+      </label>
+      <button id="uploadActsBtn" class="primary">Загрузить акты</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">3) Остатки на МОЁМ складе (ограничение рекомендаций)</h2>
+    <div class="controls">
+      <label>Файл (CSV/XLSX: offer_id/Артикул + qty/Остаток)
+        <input type="file" id="myStockFile" accept=".csv,.xlsx,.xlsm" />
+      </label>
+      <button id="uploadMyStockBtn" class="primary">Загрузить мой склад</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">4) Остатки OZON — получаем по API</h2>
+    <div class="controls">
+      <label>Магазины
+        <select id="storesOzonStock" multiple size="6" style="min-width:280px;"></select>
+      </label>
+      <label>Анти-429 min_interval (сек)
+        <input type="number" id="minIntervalStock" value="0.35" step="0.05" min="0" max="3" />
+      </label>
+      <button id="fetchOzonStockBtn" class="primary">Получить OZON-остатки</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">5) Заказы по API (FBO + FBS)</h2>
+    <div class="controls">
+      <label>Дата с
+        <input type="date" id="dateFrom" />
+      </label>
+      <label>Дата по
+        <input type="date" id="dateTo" />
+      </label>
+      <label>Магазины (можно несколько)
+        <select id="storesOrders" multiple size="6" style="min-width:280px;"></select>
+      </label>
+      <label>Схемы
+        <div class="row">
+          <label class="row" style="gap:6px; flex-direction:row;"><input type="checkbox" id="schFBO" checked> FBO</label>
+          <label class="row" style="gap:6px; flex-direction:row;"><input type="checkbox" id="schFBS" checked> FBS</label>
+        </div>
+      </label>
+      <label>Анти-429 min_interval (сек)
+        <input type="number" id="minIntervalOrders" value="0.35" step="0.05" min="0" max="3" />
+      </label>
+      <button id="fetchOrdersBtn" class="primary">Подтянуть заказы</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">6) Аналитика и рекомендации</h2>
+    <div class="controls">
+      <label>Спрос по кластерам
+        <select id="mode">
+          <option value="to" selected>cluster_to (куда уехало)</option>
+          <option value="from">cluster_from (откуда отгрузили)</option>
+        </select>
+      </label>
+      <label>Дней покрытия (cover_days)
+        <input type="number" id="coverDays" value="14" min="1" max="120" />
+      </label>
+      <label>Оставить на моём складе не менее
+        <input type="number" id="myStockReserve" value="10" min="0" max="100000" />
+      </label>
+      <button id="analyzeBtn" class="primary">Рассчитать</button>
+      <button id="exportClusterFilesBtn">Скачать файлы по кластерам</button>
+    </div>
+
+    <div class="filters">
+      <label>Фильтр по кластерам
+        <select id="clusterFilter" multiple size="6" style="min-width:320px;"></select>
+      </label>
+      <label>Поиск по кластерам
+        <input type="text" id="clusterSearch" placeholder="Например: Москва, Уфа, Краснодар" />
+      </label>
+      <button id="clearClusterFilterBtn">Сбросить фильтр</button>
+      <div class="count" id="filterSummary">Фильтр не выбран</div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <section class="card">
+      <h2 style="margin:0 0 10px;">Рекомендации (ТОП)</h2>
+      <div id="recsWrap" class="muted">Нет данных.</div>
+    </section>
+
+    <section class="card">
+      <h2 style="margin:0 0 10px;">Спрос (ТОП)</h2>
+      <div id="demandWrap" class="muted">Нет данных.</div>
+    </section>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">Уходимость по offer_id (ТОП по скорости)</h2>
+    <div id="velWrap" class="muted">Нет данных.</div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin:0 0 10px;">Лог</h2>
+    <div class="log" id="log"></div>
+  </section>
+</main>
+
+<script>
+  const API = location.origin;
+  const logEl = document.getElementById('log');
+
+  let lastRecommendations = [];
+  let lastDemand = [];
+  let lastVelocity = [];
+
+  function log(msg, obj){
+    const p = document.createElement('div');
+    p.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${msg}` + (obj ? `<pre>${escapeHtml(JSON.stringify(obj, null, 2))}</pre>` : '');
+    logEl.appendChild(p);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function escapeHtml(s){ return String(s).replace(/[&<>"]/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
+
+  function selectedIndexes(sel){
+    const vals = Array.from(sel.selectedOptions).map(o=>o.value).filter(v=>v!=="all");
+    if(!vals.length) return "all";
+    return vals.map(v=>Number(v));
+  }
+
+  async function apiGet(path){
+    const r = await fetch(API + path);
+    const j = await r.json();
+    if(!r.ok) throw new Error(j?.detail || 'HTTP '+r.status);
+    return j;
+  }
+  async function apiPostJson(path, body){
+    const r = await fetch(API + path, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j?.detail || 'HTTP '+r.status);
+    return j;
+  }
+  async function apiPostForm(path, form){
+    const r = await fetch(API + path, {method:'POST', body: form});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j?.detail || 'HTTP '+r.status);
+    return j;
+  }
+
+  const refreshStateBtn = document.getElementById('refreshStateBtn');
+  const stateBox = document.getElementById('stateBox');
+
+  const slotYear = document.getElementById('slotYear');
+  const storesSupplies = document.getElementById('storesSupplies');
+  const storesOzonStock = document.getElementById('storesOzonStock');
+  const storesOrders = document.getElementById('storesOrders');
+
+  const incItems = document.getElementById('incItems');
+  const incClusters = document.getElementById('incClusters');
+  const excCancelled = document.getElementById('excCancelled');
+  const minIntervalSup = document.getElementById('minIntervalSup');
+  const bundleDelay = document.getElementById('bundleDelay');
+  const fetchSuppliesBtn = document.getElementById('fetchSuppliesBtn');
+
+  const actsFiles = document.getElementById('actsFiles');
+  const uploadActsBtn = document.getElementById('uploadActsBtn');
+
+  const myStockFile = document.getElementById('myStockFile');
+  const uploadMyStockBtn = document.getElementById('uploadMyStockBtn');
+
+  const minIntervalStock = document.getElementById('minIntervalStock');
+  const fetchOzonStockBtn = document.getElementById('fetchOzonStockBtn');
+
+  const dateFrom = document.getElementById('dateFrom');
+  const dateTo = document.getElementById('dateTo');
+  const schFBO = document.getElementById('schFBO');
+  const schFBS = document.getElementById('schFBS');
+  const minIntervalOrders = document.getElementById('minIntervalOrders');
+  const fetchOrdersBtn = document.getElementById('fetchOrdersBtn');
+
+  const mode = document.getElementById('mode');
+  const coverDays = document.getElementById('coverDays');
+  const analyzeBtn = document.getElementById('analyzeBtn');
+  const myStockReserve = document.getElementById('myStockReserve');
+  const exportClusterFilesBtn = document.getElementById('exportClusterFilesBtn');
+
+  const clusterFilter = document.getElementById('clusterFilter');
+  const clusterSearch = document.getElementById('clusterSearch');
+  const clearClusterFilterBtn = document.getElementById('clearClusterFilterBtn');
+  const filterSummary = document.getElementById('filterSummary');
+
+  const recsWrap = document.getElementById('recsWrap');
+  const demandWrap = document.getElementById('demandWrap');
+  const velWrap = document.getElementById('velWrap');
+
+  function setDefaultDates(){
+    const now = new Date();
+    const y = now.getFullYear();
+    slotYear.value = y;
+    const d1 = new Date(Date.UTC(y,0,1));
+    dateFrom.value = d1.toISOString().slice(0,10);
+    dateTo.value = now.toISOString().slice(0,10);
+  }
+
+  function fillStores(sel, stores){
+    sel.innerHTML = '';
+    const optAll = document.createElement('option'); optAll.value='all'; optAll.textContent='Все магазины';
+    sel.appendChild(optAll);
+    stores.forEach((s, i)=>{
+      const o = document.createElement('option');
+      o.value = String(i);
+      o.textContent = s.name || ('Магазин ' + (i+1));
+      sel.appendChild(o);
+    });
+    sel.options[0].selected = true;
+  }
+
+  function collectClusters(){
+    const clusters = new Set();
+    for(const row of lastRecommendations){ if(row?.cluster) clusters.add(String(row.cluster)); }
+    for(const row of lastDemand){ if(row?.cluster) clusters.add(String(row.cluster)); }
+    for(const row of lastVelocity){ if(row?.cluster) clusters.add(String(row.cluster)); }
+    return Array.from(clusters).sort((a,b)=>a.localeCompare(b,'ru'));
+  }
+
+  function populateClusterFilter(preserve=true){
+    const prev = preserve ? new Set(Array.from(clusterFilter.selectedOptions).map(o=>o.value)) : new Set();
+    const search = (clusterSearch.value || '').trim().toLowerCase();
+    const visible = collectClusters().filter(x => !search || x.toLowerCase().includes(search));
+
+    clusterFilter.innerHTML = '';
+    for(const cl of visible){
+      const o = document.createElement('option');
+      o.value = cl;
+      o.textContent = cl;
+      if(prev.has(cl)) o.selected = true;
+      clusterFilter.appendChild(o);
+    }
+    updateFilterSummary();
+  }
+
+  function getSelectedClusters(){
+    return new Set(Array.from(clusterFilter.selectedOptions).map(o=>o.value));
+  }
+
+  function filterByClusters(rows){
+    const selected = getSelectedClusters();
+    if(!selected.size) return rows;
+    return rows.filter(r => selected.has(String(r.cluster || '')));
+  }
+
+  function updateFilterSummary(){
+    const selected = Array.from(clusterFilter.selectedOptions).map(o=>o.value);
+    if(!selected.length){
+      filterSummary.textContent = 'Фильтр не выбран';
+    } else if(selected.length <= 3){
+      filterSummary.textContent = 'Выбрано: ' + selected.join(', ');
+    } else {
+      filterSummary.textContent = 'Выбрано кластеров: ' + selected.length;
+    }
+  }
+
+  function renderRecs(rows){
+    if(!rows || !rows.length){ recsWrap.innerHTML = '<div class="muted">Нет данных.</div>'; return; }
+    const filtered = filterByClusters(rows);
+    if(!filtered.length){ recsWrap.innerHTML = '<div class="muted">По выбранным кластерам данных нет.</div>'; return; }
+
+    const top = filtered.slice(0, 200);
+    const table = document.createElement('table');
+    table.innerHTML = `
+      <thead><tr>
+        <th>Кластер</th><th>offer_id</th>
+        <th class="right">Ср/день</th>
+        <th class="right">Остаток OZON</th>
+        <th class="right">Реком.</th>
+        <th class="right">Реком. (мой склад)</th>
+        <th>Окно</th>
+      </tr></thead><tbody></tbody>`;
+    const tb = table.querySelector('tbody');
+    for(const r of top){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${escapeHtml(r.cluster)}</td>
+        <td><span class="pill">${escapeHtml(r.offer_id)}</span></td>
+        <td class="right">${Number(r.avg_daily||0).toFixed(3)}</td>
+        <td class="right">${r.current_ozon==null ? '—' : escapeHtml(String(r.current_ozon))}</td>
+        <td class="right">${escapeHtml(String(r.recommended ?? ''))}</td>
+        <td class="right"><strong>${escapeHtml(String(r.recommended_capped ?? ''))}</strong></td>
+        <td>${escapeHtml((r.first_inflow_date||'') + ' → ' + (r.last_depletion_date||'…'))}</td>`;
+      tb.appendChild(tr);
+    }
+    recsWrap.innerHTML = `<div class="count" style="margin-bottom:8px;">Показано ${top.length} из ${filtered.length}</div>`;
+    recsWrap.appendChild(table);
+  }
+
+  function renderDemand(rows){
+    if(!rows || !rows.length){ demandWrap.innerHTML = '<div class="muted">Нет данных.</div>'; return; }
+    const filtered = filterByClusters(rows);
+    if(!filtered.length){ demandWrap.innerHTML = '<div class="muted">По выбранным кластерам данных нет.</div>'; return; }
+
+    const top = filtered.slice(0, 200);
+    const table = document.createElement('table');
+    table.innerHTML = `<thead><tr><th>Кластер</th><th>offer_id</th><th class="right">Доставлено (шт.)</th></tr></thead><tbody></tbody>`;
+    const tb = table.querySelector('tbody');
+    for(const r of top){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${escapeHtml(r.cluster)}</td><td><span class="pill">${escapeHtml(r.offer_id)}</span></td><td class="right">${escapeHtml(String(r.delivered_qty))}</td>`;
+      tb.appendChild(tr);
+    }
+    demandWrap.innerHTML = `<div class="count" style="margin-bottom:8px;">Показано ${top.length} из ${filtered.length}</div>`;
+    demandWrap.appendChild(table);
+  }
+
+  function renderVelocity(rows){
+    if(!rows || !rows.length){ velWrap.innerHTML = '<div class="muted">Нет данных.</div>'; return; }
+    const filtered = filterByClusters(rows);
+    if(!filtered.length){ velWrap.innerHTML = '<div class="muted">По выбранным кластерам данных нет.</div>'; return; }
+
+    const top = filtered.slice(0, 300);
+    const table = document.createElement('table');
+    table.innerHTML = `
+      <thead><tr>
+        <th>Кластер</th><th>offer_id</th>
+        <th>Поступление</th><th>Окончание</th>
+        <th class="right">Скорость</th><th class="right">Продано</th><th class="right">Дней</th>
+        <th class="right">Остаток OZON</th>
+      </tr></thead><tbody></tbody>`;
+    const tb = table.querySelector('tbody');
+    for(const r of top){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${escapeHtml(r.cluster)}</td>
+        <td><span class="pill">${escapeHtml(r.offer_id)}</span></td>
+        <td>${escapeHtml(r.first_inflow_date || '')}</td>
+        <td>${escapeHtml(r.last_depletion_date || '…')}</td>
+        <td class="right">${Number(r.avg_daily||0).toFixed(3)}</td>
+        <td class="right">${escapeHtml(String(r.total_sold||0))}</td>
+        <td class="right">${escapeHtml(String(r.total_days||0))}</td>
+        <td class="right">${r.current_ozon==null ? '—' : escapeHtml(String(r.current_ozon))}</td>`;
+      tb.appendChild(tr);
+    }
+    velWrap.innerHTML = `<div class="count" style="margin-bottom:8px;">Показано ${top.length} из ${filtered.length}</div>`;
+    velWrap.appendChild(table);
+  }
+
+  function rerenderAllTables(){
+    renderRecs(lastRecommendations);
+    renderDemand(lastDemand);
+    renderVelocity(lastVelocity);
+  }
+
+  async function refreshState(){
+    const st = await apiGet('/api/state');
+    stateBox.textContent =
+      `stores: ${st.stores?.length||0} | supplies: ${st.supplies_meta? 'OK' : 'нет'} | акты: ${st.acts_count||0} | мой склад: ${st.my_stock_items||0} | ozon clusters: ${st.ozon_stock_clusters||0} | orders_cache: ${st.last_orders_fetch? 'OK' : 'нет'}`;
+
+    fillStores(storesSupplies, st.stores||[]);
+    fillStores(storesOzonStock, st.stores||[]);
+    fillStores(storesOrders, st.stores||[]);
+  }
+
+  refreshStateBtn.addEventListener('click', ()=> refreshState().then(()=>log('Статус обновлён.')).catch(e=>log('Ошибка: '+e.message)));
+
+  fetchSuppliesBtn.addEventListener('click', async ()=>{
+    try{
+      const body = {
+        year: Number(slotYear.value),
+        store: selectedIndexes(storesSupplies),
+        include_items: incItems.checked,
+        include_clusters: incClusters.checked,
+        exclude_cancelled: excCancelled.checked,
+        min_interval: Number(minIntervalSup.value||0.35),
+        bundle_delay: Number(bundleDelay.value||0.6),
+      };
+      log('Формирую supplies.json...', body);
+      const r = await apiPostJson('/api/fetch/supplies', body);
+      log('supplies OK', r);
+      await refreshState();
+    }catch(e){
+      log('Ошибка fetch/supplies: ' + (e.message||e));
+    }
+  });
+
+  uploadActsBtn.addEventListener('click', async ()=>{
+    try{
+      if(!actsFiles.files || !actsFiles.files.length){ log('Выберите файлы актов.'); return; }
+      const f = new FormData();
+      for(const x of actsFiles.files) f.append('files', x);
+      log('Загружаю акты...');
+      const r = await apiPostForm('/api/upload/acts', f);
+      log('acts upload OK', r);
+      await refreshState();
+    }catch(e){
+      log('Ошибка upload/acts: ' + (e.message||e));
+    }
+  });
+
+  uploadMyStockBtn.addEventListener('click', async ()=>{
+    try{
+      if(!myStockFile.files[0]){ log('Выберите файл остатков.'); return; }
+      const f = new FormData();
+      f.append('file', myStockFile.files[0]);
+      log('Загружаю мой склад...');
+      const r = await apiPostForm('/api/upload/my_stock', f);
+      log('my_stock OK', r);
+      await refreshState();
+    }catch(e){
+      log('Ошибка my_stock: ' + (e.message||e));
+    }
+  });
+
+  fetchOzonStockBtn.addEventListener('click', async ()=>{
+    try{
+      const body = { store: selectedIndexes(storesOzonStock), min_interval: Number(minIntervalStock.value||0.35) };
+      log('Тяну OZON-остатки...', body);
+      const r = await apiPostJson('/api/fetch/ozon_stock', body);
+      log('ozon_stock OK', r);
+      await refreshState();
+    }catch(e){
+      log('Ошибка ozon_stock: ' + (e.message||e));
+    }
+  });
+
+  fetchOrdersBtn.addEventListener('click', async ()=>{
+    try{
+      const schemas = [];
+      if(schFBO.checked) schemas.push('FBO');
+      if(schFBS.checked) schemas.push('FBS');
+      const body = {
+        date_from: dateFrom.value,
+        date_to: dateTo.value,
+        schemas,
+        store: selectedIndexes(storesOrders),
+        min_interval: Number(minIntervalOrders.value||0.35),
+      };
+      log('Тяну postings...', body);
+      const r = await apiPostJson('/api/fetch/postings', body);
+      log('postings OK', r);
+      await refreshState();
+    }catch(e){
+      log('Ошибка postings: ' + (e.message||e));
+    }
+  });
+
+  analyzeBtn.addEventListener('click', async ()=>{
+    try{
+      const body = { date_from: dateFrom.value, date_to: dateTo.value, mode: mode.value, cover_days: Number(coverDays.value||14), my_stock_reserve: Number(myStockReserve.value||0) };
+      log('Считаю аналитику...', body);
+      const r = await apiPostJson('/api/analyze', body);
+      log('analysis OK', {meta:r.meta, postings_count:r.postings_count, velocity_count:r.velocity_count, recommendations_count:r.recommendations_count});
+
+      lastRecommendations = r.recommendations || [];
+      lastDemand = r.demand_top || [];
+      lastVelocity = r.velocity_rows || [];
+
+      populateClusterFilter(false);
+      rerenderAllTables();
+    }catch(e){
+      log('Ошибка analyze: ' + (e.message||e));
+    }
+  });
+
+  clusterFilter.addEventListener('change', ()=>{
+    updateFilterSummary();
+    rerenderAllTables();
+  });
+
+  clusterSearch.addEventListener('input', ()=>{
+    populateClusterFilter(true);
+  });
+
+  clearClusterFilterBtn.addEventListener('click', ()=>{
+    clusterSearch.value = '';
+    populateClusterFilter(false);
+    rerenderAllTables();
+  });
+
+
+  exportClusterFilesBtn.addEventListener('click', async ()=>{
+    try{
+      const body = {
+        date_from: dateFrom.value,
+        date_to: dateTo.value,
+        cover_days: Number(coverDays.value||14),
+        my_stock_reserve: Number(myStockReserve.value||0)
+      };
+      log('Готовлю ZIP по кластерам...', body);
+
+      const r = await fetch(API + '/api/export/cluster_files', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      });
+
+      if(!r.ok){
+        let msg = 'HTTP ' + r.status;
+        try{
+          const j = await r.json();
+          msg = j?.detail || msg;
+        }catch(e){}
+        throw new Error(msg);
+      }
+
+      const blob = await r.blob();
+      const disposition = r.headers.get('Content-Disposition') || '';
+      let filename = 'cluster_files.zip';
+      const m = disposition.match(/filename="?([^"]+)"?/i);
+      if(m && m[1]) filename = m[1];
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      log('ZIP по кластерам готов.', {filename});
+    }catch(e){
+      log('Ошибка export/cluster_files: ' + (e.message||e));
+    }
+  });
+
+
+  (function boot(){
+    setDefaultDates();
+    refreshState().catch(()=>{});
+  })();
+</script>
+</body>
+</html>

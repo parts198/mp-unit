@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+  <title>Дашборд OZON</title>
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="theme.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    .table-wrapper { overflow-x: auto; }
+    .chart-frame { background: #0d1117; border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+  </style>
+  <script src="clusters_runtime.js"></script>
+  <script src="clusters_list.js"></script>
+  <script src="ozon_date_range.js"></script>
+  <script src="ozon_api_patch.js"></script>
+  <script src="ozon_server_cache.js"></script>
+  <script src="ozon_api.js"></script>
+
+<script src="/ozon_orders_accruals_patch.js?v=2026-02-05_065103"></script>
+<script src="/ozon_costprice_patch.js?v=2026-02-05_065103"></script>
+</head>
+<body>
+  <header>
+    <div class="title">Дашборд OZON</div>
+    <nav class="nav"></nav>
+  </header>
+  <div class="controls" style="padding:0 20px 12px;">
+    <select id="storeSelect" multiple size="3" aria-label="Магазины"></select>
+    <input type="date" id="dateFrom" class="date-input" />
+    <input type="date" id="dateTo" class="date-input" />
+    <button id="loadBtn">Обновить</button>
+  </div>
+  <main>
+    <section class="card">
+      <h2>Статус</h2>
+      <div id="statusText" class="badge">Выберите магазины и период</div>
+      <div id="totalsRow" class="summary-row" style="margin-top:10px;"></div>
+    </section>
+    <section class="card">
+      <h2>График</h2>
+      <div class="chart-frame">
+        <canvas id="chartCombined" height="280"></canvas>
+      </div>
+    </section>
+    <section class="card">
+      <h2>Итоги по дням</h2>
+      <div id="summaryTable"></div>
+    </section>
+    <section class="card">
+      <h2>Лог запросов</h2>
+      <div id="logBox" class="log"></div>
+    </section>
+  </main>
+    <script src="stores.secrets.js?v=2"></script>
+  <script src="scripts/ozon-core.js?v=19"></script>
+  <script>
+    const logBox = document.getElementById('logBox');
+    const storeSelect = document.getElementById('storeSelect');
+    const dateFrom = document.getElementById('dateFrom');
+    const dateTo = document.getElementById('dateTo');
+    const loadBtn = document.getElementById('loadBtn');
+    const statusText = document.getElementById('statusText');
+    const summaryTable = document.getElementById('summaryTable');
+    const totalsRow = document.getElementById('totalsRow');
+    const chartCombined = document.getElementById('chartCombined');
+    const BUILTIN_STORES = [{ name: 'ПМ-Трейд (демо)', client_id: 'demo-client', api_key: 'demo-key' }];
+    let stores = [];
+    let combinedChart;
+
+    const ACQUIRING_RATE = 0.019;
+    const PROMOTION_RATE = 0.01;
+    const PACKAGING_COST = 40;
+
+    function log(message, data) {
+      const entry = document.createElement('div');
+      entry.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${message}`;
+      if (data) {
+        const details = document.createElement('details');
+        details.innerHTML = `<summary>Детали</summary><pre>${JSON.stringify(data, null, 2)}</pre>`;
+        entry.appendChild(details);
+      }
+      logBox.prepend(entry);
+    }
+
+    function isoDate(d) { return d.toISOString().slice(0,10); }
+    function setDefaultDates() {
+      const now = new Date();
+      const weekAgo = new Date(now.getTime() - 1000*60*60*24*7);
+      dateTo.value = isoDate(now);
+      dateFrom.value = isoDate(weekAgo);
+    }
+
+    function normalizeStores(raw) {
+      if (Array.isArray(raw)) return raw;
+      if (raw && Array.isArray(raw.stores)) return raw.stores;
+      return [];
+    }
+
+    
+      
+async function loadStores() {
+  // 1) основной путь
+  try {
+    stores = await window.OzonCore.loadStoresAsync();
+  } catch (e) {
+    stores = [];
+  }
+
+  // 2) fallback: напрямую из stores.secrets.js
+  if (!stores.length) stores = Array.isArray(window.OZON_STORES) ? window.OZON_STORES.slice() : [];
+
+  // 3) последний fallback: builtin
+  if (!stores.length) stores = (typeof BUILTIN_STORES !== 'undefined' && Array.isArray(BUILTIN_STORES)) ? BUILTIN_STORES.slice() : [];
+
+  storeSelect.innerHTML = '';
+  stores.forEach((st, idx) => {
+    const opt = document.createElement('option');
+    opt.value = String(idx);
+    opt.textContent = st.name || (`Store ${st.client_id || idx}`);
+    storeSelect.appendChild(opt);
+  });
+
+  const ok = !!stores.length;
+  storeSelect.disabled = !ok;
+  loadBtn.disabled = !ok;
+  statusText.textContent = ok ? 'Выберите магазины и период' : 'Магазины не найдены';
+}
+
+
+
+    async function fetchOzon(path, { store, method='POST', body } = {}) {
+      const url = `https://api-seller.ozon.ru${path}`;
+      const headers = { 'Client-Id': store.client_id, 'Api-Key': store.api_key, 'Content-Type': 'application/json' };
+      const init = { method, headers };
+      if (body) init.body = JSON.stringify(body);
+      const started = Date.now();
+      log(`→ ${method} ${path}`);
+      const res = await fetch(url, init);
+      const text = await res.text();
+      const duration = Date.now() - started;
+      let json;
+      try { json = text ? JSON.parse(text) : {}; } catch (e) { json = { parseError: e.message, raw: text }; }
+      log(`← ${res.status} ${path} (${duration} мс)`, json);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return json;
+    }
+
+    async function fetchFbs(store, from, to) {
+      let offset = 0;
+      const limit = 1000;
+      let all = [];
+      while (true) {
+        const body = { dir: 'asc', filter: { since: from, to, status: '' }, limit, offset, translit: true, with: { analytics_data: true, financial_data: true, legal_info: false } };
+        const res = await fetchOzon('/v3/posting/fbs/list', { store, body });
+        const items = res.result?.postings || res.result?.items || res.result || [];
+        all = all.concat(items);
+        if (!res.result?.has_next || items.length < limit) break;
+        offset += limit;
+      }
+      return all.map(p => ({ ...p, _schema: 'FBS' }));
+    }
+
+    async function fetchFbo(store, from, to) {
+      let offset = 0;
+      const limit = 1000;
+      let all = [];
+      while (true) {
+        const body = { dir: 'ASC', filter: { since: from, to, status: '' }, limit, offset, translit: true, with: { analytics_data: true, financial_data: true, legal_info: false } };
+        const res = await fetchOzon('/v2/posting/fbo/list', { store, body });
+        const items = res.result?.postings || res.result?.items || res.result || [];
+        all = all.concat(items.map(p => ({ ...p, _schema: 'FBO' })));
+        if (!res.result?.has_next || items.length < limit) break;
+        offset += limit;
+      }
+      return all;
+    }
+
+    async function fetchPrices(store, offers) {
+      const map = new Map();
+      const chunkSize = 1000;
+      for (let i = 0; i < offers.length; i += chunkSize) {
+        const chunk = offers.slice(i, i + chunkSize);
+        const body = { cursor: '', filter: { offer_id: chunk, visibility: 'ALL' }, limit: chunk.length };
+        const res = await fetchOzon('/v5/product/info/prices', { store, body });
+        (res.items || []).forEach(item => map.set(item.offer_id, item));
+      }
+      return map;
+    }
+
+    function getCommissionPercent(priceInfo, schema) {
+      if (!priceInfo?.commissions) return 0;
+      if (schema === 'FBO') return priceInfo.commissions.sales_percent_fbo || 0;
+      return priceInfo.commissions.sales_percent_fbs || 0;
+    }
+
+    function getLogisticsCost(priceInfo, schema, unitPrice) {
+      if (schema === 'FBO') {
+        const min = priceInfo?.commissions?.fbo_direct_flow_trans_min_amount ?? 0;
+        const max = priceInfo?.commissions?.fbo_direct_flow_trans_max_amount ?? min;
+        const base = Math.min(Math.max(min, 0), max || min);
+        const lastMile = priceInfo?.commissions?.fbo_deliv_to_customer_amount ?? 0;
+        const pct = priceInfo?.current_tariff?.fee ?? 0;
+        return base + lastMile + unitPrice * pct / 100;
+      }
+      const delivery = priceInfo?.commissions?.fbs_deliv_to_customer_amount ?? 0;
+      const logistics = priceInfo?.commissions?.fbs_direct_flow_trans_max_amount ?? 0;
+      const firstMile = priceInfo?.commissions?.fbs_first_mile_max_amount ?? 0;
+      return delivery + logistics + firstMile;
+    }
+
+    function calcLineMetrics(prod, priceInfo, schema) {
+      const qty = Number(prod.quantity || 1);
+      const unitPrice = Number(prod.price || prod.sale_price || prod.final_price || 0);
+      const net = Number(priceInfo?.price?.net_price || 0);
+      const commissionPct = getCommissionPercent(priceInfo, schema);
+      const commissionRub = unitPrice * commissionPct / 100;
+      const acquiring = unitPrice * ACQUIRING_RATE;
+      const promotion = unitPrice * PROMOTION_RATE;
+      const logistics = getLogisticsCost(priceInfo, schema, unitPrice);
+      const unitCosts = acquiring + promotion + commissionRub + logistics + PACKAGING_COST;
+      const revenue = unitPrice - unitCosts;
+      const margin = revenue - net;
+      return {
+        qty,
+        unitPrice,
+        totalPrice: unitPrice * qty,
+        net: net * qty,
+        revenue: revenue * qty,
+        margin: margin * qty
+      };
+    }
+
+    function aggregate(postings, priceMap) {
+      const byDate = new Map();
+      postings.forEach(p => {
+        const created = (p.created_at || p.in_process_at || '').slice(0, 10);
+        const dateKey = created || '—';
+        const storeName = p._storeName || 'Магазин';
+        const key = `${dateKey}|${storeName}`;
+        let bucket = byDate.get(key);
+        if (!bucket) {
+          bucket = { date: dateKey, store: storeName, orders: 0, amount: 0, revenue: 0, net: 0, margin: 0 };
+          byDate.set(key, bucket);
+        }
+        bucket.orders += 1;
+        (p.products || []).forEach(prod => {
+          const info = priceMap.get(prod.offer_id) || priceMap.get(String(prod.product_id)) || null;
+          const metrics = calcLineMetrics(prod, info, p._schema || 'FBS');
+          bucket.amount += metrics.totalPrice;
+          bucket.revenue += metrics.revenue;
+          bucket.net += metrics.net;
+          bucket.margin += metrics.margin;
+        });
+      });
+      return Array.from(byDate.values()).sort((a,b) => a.date.localeCompare(b.date) || a.store.localeCompare(b.store));
+    }
+
+    function renderTable(rows) {
+      if (!rows.length) { summaryTable.innerHTML = '<p>Нет данных за период</p>'; totalsRow.textContent = ''; return; }
+      const totals = rows.reduce((acc, r) => {
+        acc.orders += r.orders;
+        acc.amount += r.amount;
+        acc.revenue += r.revenue;
+        acc.margin += r.margin;
+        acc.net += r.net;
+        return acc;
+      }, { orders: 0, amount: 0, revenue: 0, margin: 0, net: 0 });
+      const marginPctTotal = totals.net > 0 ? (totals.margin / totals.net) * 100 : 0;
+      totalsRow.innerHTML = `
+        <span class="badge">Заказы: ${totals.orders}</span>
+        <span class="badge">Сумма: ${totals.amount.toFixed(2)} ₽</span>
+        <span class="badge">Выручка: ${totals.revenue.toFixed(2)} ₽</span>
+        <span class="badge">Маржа: ${totals.margin.toFixed(2)} ₽</span>
+        <span class="badge">Маржинальность: ${marginPctTotal.toFixed(1)}%</span>
+      `;
+      const html = `<div style="overflow-x:auto;"><div class="table-wrap">
+<table><thead><tr>
+        <th>Дата</th><th>Магазин</th><th>Заказы</th><th>Сумма</th><th>Выручка</th><th>Маржа</th><th>Маржинальность</th>
+      </tr></thead><tbody>
+      ${rows.map(r => {
+        const marginPct = r.net > 0 ? (r.margin / r.net) * 100 : 0;
+        return `<tr><td>${r.date}</td><td>${r.store}</td><td>${r.orders}</td><td>${r.amount.toFixed(2)} ₽</td><td>${r.revenue.toFixed(2)} ₽</td><td>${r.margin.toFixed(2)} ₽</td><td>${marginPct.toFixed(1)}%</td></tr>`;
+      }).join('')}</tbody></table>
+</div></div>`;
+      summaryTable.innerHTML = html;
+    }
+
+    function renderCharts(rows) {
+      const byDay = new Map();
+      rows.forEach((r) => {
+        const day = r.date;
+        if (!byDay.has(day)) byDay.set(day, { revenue: 0, margin: 0, net: 0, perStore: new Map() });
+        const bucket = byDay.get(day);
+        bucket.revenue += r.revenue;
+        bucket.margin += r.margin;
+        bucket.net += r.net;
+        const storeEntry = bucket.perStore.get(r.store) || { revenue: 0, margin: 0 };
+        storeEntry.revenue += r.revenue;
+        storeEntry.margin += r.margin;
+        bucket.perStore.set(r.store, storeEntry);
+      });
+
+      const labels = Array.from(byDay.keys()).sort();
+      const totalRevenue = labels.map((l) => byDay.get(l).revenue);
+      const totalMargin = labels.map((l) => byDay.get(l).margin);
+      const totalMarginPct = labels.map((l) => {
+        const bucket = byDay.get(l);
+        return bucket.net > 0 ? (bucket.margin / bucket.net) * 100 : 0;
+      });
+
+      const palette = ['#0d6efd', '#f97316', '#22c55e', '#8b5cf6', '#06b6d4', '#ef4444', '#f59e0b', '#10b981'];
+      const storeNames = new Set();
+      rows.forEach((r) => storeNames.add(r.store));
+      const perStoreDatasets = Array.from(storeNames).map((storeName, idx) => {
+        return {
+          label: `Выручка ${storeName}`,
+          type: 'line',
+          data: labels.map((l) => byDay.get(l).perStore.get(storeName)?.revenue || 0),
+          borderColor: palette[idx % palette.length],
+          backgroundColor: palette[idx % palette.length] + '33',
+          tension: 0.35,
+          pointRadius: 0,
+          pointHitRadius: 12,
+          yAxisID: 'y',
+        };
+      });
+
+      const datasets = [
+        {
+          label: 'Выручка (все магазины)',
+          type: 'bar',
+          data: totalRevenue,
+          backgroundColor: 'rgba(13,110,253,0.3)',
+          borderColor: '#0d6efd',
+          stack: 'money',
+          yAxisID: 'y',
+          borderWidth: 1,
+          barThickness: 28,
+        },
+        {
+          label: 'Маржа (все магазины)',
+          type: 'bar',
+          data: totalMargin,
+          backgroundColor: 'rgba(34,197,94,0.35)',
+          borderColor: '#22c55e',
+          stack: 'money',
+          yAxisID: 'y',
+          borderWidth: 1,
+          barThickness: 24,
+        },
+        {
+          label: 'Выручка (все магазины), линия',
+          type: 'line',
+          data: totalRevenue,
+          borderColor: '#2563eb',
+          backgroundColor: 'rgba(37,99,235,0.12)',
+          tension: 0.35,
+          pointRadius: 0,
+          pointHitRadius: 12,
+          yAxisID: 'y',
+          fill: false,
+        },
+        {
+          label: 'Маржинальность, %',
+          type: 'line',
+          data: totalMarginPct,
+          borderColor: '#f97316',
+          backgroundColor: 'rgba(249,115,22,0.15)',
+          tension: 0.35,
+          pointRadius: 0,
+          pointHitRadius: 12,
+          yAxisID: 'y1',
+          fill: false,
+        },
+        ...perStoreDatasets,
+      ];
+
+      if (combinedChart) combinedChart.destroy();
+      combinedChart = new Chart(chartCombined, {
+        type: 'bar',
+        data: { labels, datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          stacked: false,
+          layout: { padding: { top: 10, bottom: 10, left: 6, right: 6 } },
+          scales: {
+            y: { stacked: true, title: { display: true, text: '₽' }, ticks: { callback: (v) => `${v} ₽` } },
+            y1: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: '%' }, ticks: { callback: (v) => `${v}%` } },
+          },
+          plugins: {
+            legend: { display: true },
+            tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)}` } },
+          },
+        },
+      });
+    }
+
+    async function loadDashboard() {
+      if (!stores.length) return;
+      const selected = [...storeSelect.selectedOptions].map(o => stores[Number(o.value)]).filter(Boolean);
+      if (!selected.length) { statusText.textContent = 'Выберите хотя бы один магазин'; return; }
+      statusText.textContent = 'Загружаем…';
+      const from = `${dateFrom.value}T00:00:00Z`;
+      const to = `${dateTo.value}T23:59:59Z`;
+      let allRows = [];
+      for (const store of selected) {
+        const fbs = await fetchFbs(store, from, to);
+        const fbo = await fetchFbo(store, from, to);
+        const postings = fbs.concat(fbo).map(p => ({ ...p, _storeName: store.name }));
+        const offers = postings.flatMap(p => (p.products||[]).map(prod => prod.offer_id || String(prod.product_id))).filter(Boolean);
+        const priceMap = await fetchPrices(store, Array.from(new Set(offers)));
+        const rows = aggregate(postings, priceMap);
+        allRows = allRows.concat(rows);
+      }
+      renderTable(allRows);
+      renderCharts(allRows);
+      statusText.textContent = 'Готово';
+    }
+
+    loadBtn.addEventListener('click', loadDashboard);
+
+    setDefaultDates();
+    loadStores();
+  </script>
+<script src="stores_runtime.js"></script>
+<script src="nav.js"></script>
+<script src="stores.secrets.js"></script>
+<script src="ozon_storage.js"></script>
+<script src="nav.js"></script>
+<script src="table_sort.js"></script>
+<script src="ozon_prices_detach_patch.js"></script>
+</body>
+</html>
