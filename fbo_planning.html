@@ -28,8 +28,10 @@
 
 <script src="/ozon_orders_accruals_patch.js?v=2026-02-05_065103"></script>
 <script src="/ozon_costprice_patch.js?v=2026-02-05_065103"></script>
+  <link rel="stylesheet" href="/cabinet.css">
 </head>
 <body>
+<div id="topnav"></div>
 <header>
   <div class="title">Планирование FBO</div>
   <nav class="nav"></nav>
@@ -694,5 +696,29 @@
 <script src="table_sort.js"></script>
 <script src="ozon_prices_detach_patch.js"></script>
 <script src="fbo_planning_xlsx_patch.js"></script>
+
+<script src="/auth.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  if (typeof requireAuth === "function") {
+    requireAuth();
+  }
+
+  var runNav = function () {
+    if (typeof renderCabinetNav === "function") {
+      renderCabinetNav("fbo_planning");
+    }
+  };
+
+  if (typeof fetchMe === "function") {
+    Promise.resolve(fetchMe()).catch(function () {}).finally(runNav);
+  } else {
+    runNav();
+  }
+});
+// __MPUNIT_NAV_INIT__:fbo_planning
+</script>
+
 </body>
 </html>

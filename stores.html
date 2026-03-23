@@ -1,208 +1,536 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Магазины — OZON</title>
-  <link rel="stylesheet" href="theme.css"/>
+  <meta charset="utf-8" />
+  <title>Личный кабинет — mp-unit</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    .controls{gap:10px; align-items:center; flex-wrap:wrap;}
-    table{width:100%; border-collapse:collapse;}
-    th,td{padding:8px 10px; border-bottom:1px solid rgba(0,0,0,.08); vertical-align:top;}
-    th{white-space:nowrap;}
-    .right{text-align:right;}
-    .log{max-height:220px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace; font-size:12px;}
-    input[type="text"]{min-width:180px;}
-    .pill{display:inline-block; padding:2px 8px; border-radius:999px; background:rgba(47,129,247,.12); border:1px solid rgba(47,129,247,.25);}
-  </style>
-  <script src="stores.secrets.js"></script>
-  <script src="stores_runtime.js"></script>
-  <script src="ozon_date_range.js"></script>
-  <script src="ozon_api_patch.js"></script>
-  <script src="ozon_server_cache.js"></script>
-  <script src="ozon_api.js"></script>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; background:#f6f7fb; margin:0; color:#111}
+    .top{background:#fff; border-bottom:1px solid #e8e8ee; padding:14px 18px; display:flex; align-items:center; justify-content:space-between; gap:12px}
+    .wrap{max-width:980px; margin:0 auto; padding:18px}
+    .card{background:#fff; border:1px solid #e8e8ee; border-radius:14px; padding:16px; box-shadow:0 8px 30px rgba(0,0,0,.04); margin-bottom:16px}
+    h1{margin:0; font-size:18px; letter-spacing:.2px}
+    h2{margin:0 0 12px 0; font-size:16px}
+    .muted{color:#666; font-size:13px}
+    .msg{margin-top:10px; color:#b00020; font-size:13px; min-height:18px}
 
-<script src="/ozon_orders_accruals_patch.js?v=2026-02-05_065103"></script>
-<script src="/ozon_costprice_patch.js?v=2026-02-05_065103"></script>
+    table{width:100%; border-collapse:collapse}
+    th,td{padding:10px; border-bottom:1px solid #f0f0f5; text-align:left; font-size:13px; vertical-align:middle}
+    th{color:#666; font-weight:600}
+
+    label{display:block; font-size:12px; color:#555; margin-top:10px}
+    input, select{width:100%; padding:10px 12px; margin-top:6px; border:1px solid #ddd; border-radius:10px; font-size:14px; background:#fff}
+    input[type=password]{letter-spacing:.5px}
+
+    .grid{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+    .actions{display:flex; gap:8px; justify-content:flex-end; align-items:center; flex-wrap:wrap}
+
+    .btn{padding:10px 12px; border:0; border-radius:10px; background:#0b5cff; color:#fff; font-weight:600; cursor:pointer}
+    .btn2{padding:8px 10px; border:1px solid #ddd; border-radius:10px; background:#fff; cursor:pointer}
+    .danger{border-color:#ffd6d6; color:#b00020}
+    .pill{display:inline-block; padding:2px 8px; border:1px solid #eee; border-radius:999px; font-size:12px; color:#555; background:#fafafe}
+
+    .adminRow{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+
+    @media (max-width:720px){
+      .wrap{padding:12px}
+      .card{padding:12px}
+      .grid{grid-template-columns:1fr}
+      .adminRow{grid-template-columns:1fr}
+      .actions{justify-content:stretch}
+      .actions .btn, .actions .btn2{width:100%}
+      th,td{padding:8px}
+      .top{padding:12px}
+    }
+  </style>
+  <link rel="stylesheet" href="/cabinet.css">
 </head>
 <body>
-<header>
-  <div class="title">Магазины</div>
-  <nav class="nav"></nav>
-</header>
-
-<div class="controls" style="padding:0 20px 12px;">
-  <button class="btn" id="btnReload">Перечитать stores.secrets.js (слияние)</button>
-  <button class="btn" id="btnReset">Сбросить локальные правки</button>
-  <button class="btn" id="btnExport">Экспорт JSON</button>
-  <label class="btn" style="display:inline-flex; gap:8px; align-items:center;">
-    Импорт JSON <input type="file" id="fileImport" accept="application/json" style="display:none;">
-  </label>
-</div>
-
-<main>
-  <section class="card">
-    <h2>Статус</h2>
-    <div id="statusText">—</div>
-    <div class="muted" style="margin-top:6px;">
-      Магазины сохраняются в <span class="pill">localStorage</span> этого домена и видны на всех страницах в этом же браузере/профиле.
-      Для “серверного” хранения — правьте <code>stores.secrets.js</code> через SSH.
+<div id="topnav"></div>
+  <div class="top">
+    <div>
+      <h1>Личный кабинет</h1>
+      <div class="muted" id="who"></div>
+      <div class="muted" id="modeBadge" style="margin-top:2px"></div>
     </div>
-  </section>
+    <button class="btn2" onclick="logout()">Выйти</button>
+  </div>
 
-  <section class="card">
-    <h2>Добавить магазин</h2>
-    <div class="controls">
-      <input id="inName" type="text" placeholder="Название"/>
-      <input id="inClient" type="text" placeholder="Client-Id"/>
-      <input id="inKey" type="text" placeholder="Api-Key"/>
-      <input id="inVat" type="text" placeholder="НДС (например 0)"/>
-      <button class="btn btn-primary" id="btnAdd">Добавить</button>
+  <div class="wrap">
+
+    <div class="card" id="adminCard" style="display:none">
+      <h2>Админ: режим пользователя</h2>
+      <div class="muted">Выберите пользователя — будете видеть/менять его магазины.</div>
+
+      <div class="adminRow" style="margin-top:10px">
+        <div>
+          <label>Поиск</label>
+          <input id="userSearch" placeholder="id / username / email" />
+        </div>
+        <div>
+          <label>Пользователь</label>
+          <select id="as_user"><option value="">— мой кабинет (админ) —</option></select>
+        </div>
+      </div>
+
+      <div class="actions" style="margin-top:12px">
+        <button class="btn2" id="meBtn" type="button">Мой кабинет</button>
+        <button class="btn" id="applyUserBtn" type="button">Применить</button>
+      </div>
+      <div class="msg" id="adminMsg"></div>
     </div>
-  </section>
 
-  <section class="card">
-    <h2>Список</h2>
-    <div class="table-wrap" id="tableWrap"></div>
-  </section>
+    <div class="card" id="pwdCard">
+      <h2>Настройки</h2>
+      <div class="muted">Смена пароля для текущего аккаунта.</div>
+      <div id="pwdMsg" class="msg"></div>
 
-  <section class="card">
-    <h2>Лог</h2>
-    <div class="log" id="logBox"></div>
-  </section>
-</main>
+      <div class="grid">
+        <div>
+          <label>Текущий пароль</label>
+          <input id="old_password" type="password" placeholder="••••••••" />
+        </div>
+        <div>
+          <label>Новый пароль</label>
+          <input id="new_password" type="password" placeholder="Минимум 8 символов" />
+        </div>
+      </div>
+
+      <div class="actions" style="margin-top:12px">
+        <button class="btn2" type="button" onclick="togglePwdInputs()">👁 Показать</button>
+        <button class="btn" type="button" id="changePwdBtn">Сменить пароль</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 id="formTitle">Добавить магазин</h2>
+      <div id="msg" class="msg"></div>
+
+      <input type="hidden" id="edit_id" value=""/>
+
+      <div class="grid">
+        <div>
+          <label>Название</label>
+          <input id="name" placeholder="Напр. Zekkert" autocomplete="off"/>
+        </div>
+        <div>
+          <label>Client ID</label>
+          <input id="client_id" placeholder="123456" autocomplete="off"/>
+        </div>
+      </div>
+
+      <label>API Key</label>
+      <div style="display:flex; gap:8px; align-items:center">
+        <input id="api_key" type="password" placeholder="Введите новый ключ (или оставьте пустым)" autocomplete="new-password"/>
+        <button class="btn2" type="button" onclick="toggleApiConfirm()">👁</button>
+      </div>
+
+      <label>API Key ещё раз</label>
+      <input id="api_key2" type="password" placeholder="Повторите новый ключ (если меняете)" autocomplete="new-password"/>
+
+      <div class="grid">
+        <div>
+          <label>Spreadsheet ID (можно пусто)</label>
+          <input id="spreadsheet_id" placeholder="1t3Bgix9YuCJ7Yo..." autocomplete="off"/>
+        </div>
+        <div>
+          <label>VAT (например 0.2)</label>
+          <input id="vat" placeholder="0.2" autocomplete="off"/>
+        </div>
+      </div>
+
+      <div class="actions" style="margin-top:12px">
+        <button class="btn2" id="cancelBtn" style="display:none" type="button">Отмена</button>
+        <button class="btn" id="saveBtn" type="button">Сохранить</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 id="storesTitle">Мои магазины</h2>
+      <div style="margin-top:12px; overflow:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Название</th>
+              <th>Client ID</th>
+              <th>API Key</th>
+              <th>Spreadsheet</th>
+              <th>VAT</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="/auth.js"></script>
+  <script>
+    requireAuth();
+
+    const msg = document.getElementById("msg");
+    const rows = document.getElementById("rows");
+
+    const formTitle = document.getElementById("formTitle");
+    const editId = document.getElementById("edit_id");
+    const cancelBtn = document.getElementById("cancelBtn");
+    const saveBtn = document.getElementById("saveBtn");
+
+    const who = document.getElementById("who");
+    const modeBadge = document.getElementById("modeBadge");
+    const storesTitle = document.getElementById("storesTitle");
+
+    const adminCard = document.getElementById("adminCard");
+    const adminMsg = document.getElementById("adminMsg");
+    const asUserSel = document.getElementById("as_user");
+    const userSearch = document.getElementById("userSearch");
+    const applyUserBtn = document.getElementById("applyUserBtn");
+    const meBtn = document.getElementById("meBtn");
+
+    const profile = (()=>{ try { return JSON.parse(localStorage.getItem("profile")||"{}") } catch(e){ return {} } })();
+    const isAdmin = !!profile.is_staff;
+
+    function esc(s){ return (s ?? "").toString().replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;"); }
+
+    function maskKey(k){
+      if(!k) return "";
+      const v = String(k);
+      if (v.includes("…") || v.includes("...")) return v;
+      if (v.length <= 8) return v.slice(0,2) + "…" + v.slice(-2);
+      return v.slice(0,4) + "…" + v.slice(-4);
+    }
+
+    function togglePwdInputs(){
+      const a = document.getElementById("old_password");
+      const b = document.getElementById("new_password");
+      if (!a || !b) return;
+      const next = (a.type === "password") ? "text" : "password";
+      a.type = next; b.type = next;
+    }
+
+    function toggleApiConfirm(){
+      const a = document.getElementById("api_key");
+      const b = document.getElementById("api_key2");
+      if (!a) return;
+      const next = (a.type === "password") ? "text" : "password";
+      a.type = next;
+      if (b) b.type = next;
+    }
+
+    function getAsUser(){
+      if (!isAdmin) return "";
+      return (localStorage.getItem("as_user") || "").trim();
+    }
+
+    function apiPath(base){
+      const asUser = getAsUser();
+      return (isAdmin && asUser) ? (base + "?as_user=" + encodeURIComponent(asUser)) : base;
+    }
+
+    function updateHeader(users){
+      who.textContent = profile.username ? ("Привет, " + profile.username) : "";
+
+      if (!isAdmin) { modeBadge.textContent = ""; return; }
+
+      const asUser = getAsUser();
+      if (!asUser) { modeBadge.textContent = "Режим: админ (свой кабинет)"; return; }
+
+      const u = (users || []).find(x => String(x.id) === String(asUser));
+      modeBadge.textContent = u ? ("Режим: пользователь — " + u.username + " (#" + u.id + ")") : ("Режим: пользователь #" + asUser);
+    }
+
+    function updateStoresTitle(){
+      if (!isAdmin) { storesTitle.textContent = "Мои магазины"; return; }
+      const asUser = getAsUser();
+      storesTitle.textContent = asUser ? ("Магазины пользователя #" + asUser) : "Мои магазины (админ)";
+    }
+
+    function setModeEdit(on){
+      cancelBtn.style.display = on ? "inline-block" : "none";
+      formTitle.textContent = on ? ("Редактировать магазин #" + editId.value) : "Добавить магазин";
+      saveBtn.textContent = on ? "Обновить" : "Сохранить";
+    }
+
+    function clearForm(){
+      ["edit_id","name","client_id","api_key","api_key2","spreadsheet_id","vat"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = "";
+      });
+      const apiEl = document.getElementById("api_key");
+      if (apiEl) apiEl.placeholder = "Введите новый ключ (или оставьте пустым)";
+      setModeEdit(false);
+    }
+
+    function renderRow(st){
+      const safeId = st.id;
+      const safeName = esc(st.name);
+      const safeClient = esc(st.client_id || "");
+      const safeSheet = esc(st.spreadsheet_id || "");
+      const safeVat = esc(st.vat || "");
+
+      const canReveal = isAdmin;
+      const shownKey = esc(st.api_key || "");
+      const masked = canReveal ? esc(maskKey(st.api_key || "")) : shownKey;
+      const realKey = canReveal ? esc(st.api_key || "") : "";
+
+      const eyeBtn = canReveal ? `<button class="btn2" style="margin-left:8px" onclick="revealKey(${safeId})">👁</button>` : ``;
+
+      return `
+        <tr>
+          <td>${safeId}</td>
+          <td><strong>${safeName}</strong></td>
+          <td><span class="pill">${safeClient}</span></td>
+          <td>
+            <span id="k_${safeId}" data-real="${realKey}" data-masked="${masked}">${masked}</span>
+            ${eyeBtn}
+          </td>
+          <td>${safeSheet}</td>
+          <td>${safeVat}</td>
+          <td class="actions">
+            <button class="btn2" onclick="editStore(${safeId})">Редакт.</button>
+            <button class="btn2 danger" onclick="delStore(${safeId})">Удалить</button>
+          </td>
+        </tr>
+      `;
+    }
+    // admin: reveal full api key by request (not stored in DOM)
+    window.revealKey = async (id) => {
+      try {
+        if (!isAdmin) return;
+        const el = document.getElementById("k_" + id);
+        if (!el) return;
+
+        const masked = el.getAttribute("data-masked") || el.textContent || "";
+        const cur = (el.textContent || "").trim();
+
+        // если уже показали — скрыть обратно
+        if (cur && masked && cur !== masked) {
+          el.textContent = masked;
+          return;
+        }
+
+        // запросим полный ключ с бэка
+        const res = await apiFetch(apiPath(`/api/stores/${id}/api-key/`));
+        const data = await res.json().catch(()=>({}));
+        if (!res.ok) {
+          msg.textContent = data.detail || ("Ошибка показа ключа: " + res.status);
+          return;
+        }
+
+        if (data.api_key) el.textContent = data.api_key;
+      } catch (e) {
+        msg.textContent = "Ошибка показа ключа";
+      }
+    };
+
+    async function loadStores(){
+      updateStoresTitle();
+      const res = await apiFetch(apiPath("/api/stores/"));
+      if (!res.ok) {
+        const data = await res.json().catch(()=>({}));
+        msg.textContent = data.detail || ("Ошибка загрузки: " + res.status);
+        return;
+      }
+      const list = await res.json();
+      rows.innerHTML = list.map(renderRow).join("");
+    }
+
+    window.editStore = async (id) => {
+      msg.textContent = "";
+      const res = await apiFetch(apiPath(`/api/stores/${id}/`));
+      if (!res.ok) {
+        const data = await res.json().catch(()=>({}));
+        msg.textContent = data.detail || ("Ошибка: " + res.status);
+        return;
+      }
+      const st = await res.json();
+      editId.value = st.id;
+      document.getElementById("name").value = st.name || "";
+      document.getElementById("client_id").value = st.client_id || "";
+      document.getElementById("spreadsheet_id").value = st.spreadsheet_id || "";
+      document.getElementById("vat").value = st.vat || "";
+
+      // api_key не подставляем — менять только вручную
+      document.getElementById("api_key").value = "";
+      document.getElementById("api_key2").value = "";
+
+      setModeEdit(true);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    };
+
+    window.delStore = async (id) => {
+      if (!confirm("Удалить магазин #" + id + "?")) return;
+      const res = await apiFetch(apiPath(`/api/stores/${id}/`), { method: "DELETE" });
+      if (!res.ok && res.status !== 204) {
+        const data = await res.json().catch(()=>({}));
+        alert(data.detail || ("Ошибка удаления: " + res.status));
+        return;
+      }
+      await loadStores();
+      if (editId.value && Number(editId.value) === Number(id)) clearForm();
+    };
+
+    cancelBtn.addEventListener("click", () => clearForm());
+
+    saveBtn.addEventListener("click", async () => {
+      msg.textContent = "";
+
+      const payload = {
+        name: document.getElementById("name").value.trim(),
+        client_id: document.getElementById("client_id").value.trim(),
+        spreadsheet_id: (document.getElementById("spreadsheet_id").value.trim() || ""),
+        vat: (document.getElementById("vat").value.trim() || "")
+      };
+
+      const apiVal = document.getElementById("api_key").value.trim();
+      const apiVal2 = document.getElementById("api_key2").value.trim();
+      if (apiVal) {
+        if (apiVal2 && apiVal2 !== apiVal) {
+          msg.textContent = "API key не совпадает (проверьте повтор).";
+          return;
+        }
+        payload.api_key = apiVal;
+      }
+
+      const id = editId.value.trim();
+      const url = id ? apiPath(`/api/stores/${id}/`) : apiPath("/api/stores/");
+      const method = id ? "PUT" : "POST";
+
+      const res = await apiFetch(url, { method, body: payload });
+      const data = await res.json().catch(()=> ({}));
+
+      if (!res.ok) {
+        msg.textContent = JSON.stringify(data);
+        return;
+      }
+
+      clearForm();
+      await loadStores();
+    });
+
+    // change password
+    const changePwdBtn = document.getElementById("changePwdBtn");
+    if (changePwdBtn) {
+      changePwdBtn.addEventListener("click", async () => {
+        const pwdMsg = document.getElementById("pwdMsg");
+        if (pwdMsg) pwdMsg.textContent = "";
+
+        const old_password = (document.getElementById("old_password").value || "").trim();
+        const new_password = (document.getElementById("new_password").value || "").trim();
+
+        if (!old_password || !new_password) {
+          if (pwdMsg) pwdMsg.textContent = "Заполните текущий и новый пароль.";
+          return;
+        }
+        if (new_password.length < 8) {
+          if (pwdMsg) pwdMsg.textContent = "Новый пароль должен быть минимум 8 символов.";
+          return;
+        }
+
+        const res = await apiFetch("/auth/change-password/", {
+          method: "POST",
+          body: { old_password, new_password }
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          if (pwdMsg) pwdMsg.textContent = data.detail || JSON.stringify(data) || ("Ошибка: " + res.status);
+          return;
+        }
+
+        document.getElementById("old_password").value = "";
+        document.getElementById("new_password").value = "";
+        if (pwdMsg) pwdMsg.textContent = "Пароль изменён.";
+      });
+    }
+
+    async function adminInit(){
+      if (!isAdmin) return;
+
+      adminCard.style.display = "block";
+      adminMsg.textContent = "";
+
+      const res = await apiFetch("/auth/admin/users/");
+      if (!res.ok) {
+        adminMsg.textContent = "Не удалось загрузить пользователей: " + res.status;
+        return;
+      }
+      const users = await res.json();
+
+      function renderOptions(list, selected){
+        const opt = ['<option value="">— мой кабинет (админ) —</option>']
+          .concat(list.map(u => `<option value="${u.id}">${u.id} — ${u.username} (${u.email})</option>`));
+        asUserSel.innerHTML = opt.join("");
+        asUserSel.value = selected || "";
+      }
+
+      const saved = getAsUser();
+      renderOptions(users, saved);
+      updateHeader(users);
+
+      userSearch.addEventListener("input", () => {
+        const q = (userSearch.value || "").trim().toLowerCase();
+        const filtered = q ? users.filter(u =>
+          String(u.id).includes(q) ||
+          (u.username||"").toLowerCase().includes(q) ||
+          (u.email||"").toLowerCase().includes(q)
+        ) : users;
+        renderOptions(filtered, asUserSel.value);
+      });
+
+      applyUserBtn.addEventListener("click", async () => {
+        const v = (asUserSel.value || "").trim();
+        localStorage.setItem("as_user", v);
+        clearForm();
+        updateHeader(users);
+        await loadStores();
+      });
+
+      meBtn.addEventListener("click", async () => {
+        localStorage.removeItem("as_user");
+        userSearch.value = "";
+        asUserSel.value = "";
+        renderOptions(users, "");
+        clearForm();
+        updateHeader(users);
+        await loadStores();
+      });
+    }
+
+    // если profile пустой — подтянем через API
+    (async () => {
+      try {
+        if (!profile.username) await fetchMe();
+      } catch(e) {}
+    })();
+
+    adminInit();
+    loadStores();
+  </script>
 
 <script>
-(() => {
-  const elStatus = document.getElementById('statusText');
-  const elLog = document.getElementById('logBox');
-  const wrap = document.getElementById('tableWrap');
-
-  const inName = document.getElementById('inName');
-  const inClient = document.getElementById('inClient');
-  const inKey = document.getElementById('inKey');
-  const inVat = document.getElementById('inVat');
-
-  function esc(s){ return String(s ?? '').replace(/[&<>"]/g,c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
-  function log(m){
-    const div = document.createElement('div');
-    div.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${esc(m)}`;
-    elLog.appendChild(div);
-    elLog.scrollTop = elLog.scrollHeight;
+document.addEventListener("DOMContentLoaded", function () {
+  if (typeof requireAuth === "function") {
+    requireAuth();
   }
 
-  function load(){ return (window.ozonLoadStores ? window.ozonLoadStores() : []) || []; }
-  function save(list){ return (window.ozonSaveStores ? window.ozonSaveStores(list) : list) || []; }
+  var runNav = function () {
+    if (typeof renderCabinetNav === "function") {
+      renderCabinetNav("stores");
+    }
+  };
 
-  function render(){
-    const stores = load();
-    elStatus.textContent = 'Магазинов: ' + stores.length;
-
-    const t = document.createElement('table');
-    t.innerHTML = `
-      <thead>
-        <tr>
-          <th>#</th><th>Название</th><th>Client-Id</th><th>Api-Key</th><th>НДС</th><th class="right">Действия</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    `;
-    const tb = t.querySelector('tbody');
-
-    stores.forEach((s,i) => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${i+1}</td>
-        <td>${esc(s.name)}</td>
-        <td><code>${esc(s.client_id)}</code></td>
-        <td><code>${esc(String(s.api_key||'').slice(0,4))}…</code></td>
-        <td>${esc(s.vat ?? '')}</td>
-        <td class="right"><button class="btn btn-danger" data-del="${esc(s.client_id)}">Удалить</button></td>
-      `;
-      tb.appendChild(tr);
-    });
-
-    wrap.innerHTML = '';
-    wrap.appendChild(t);
-
-    wrap.querySelectorAll('button[data-del]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = btn.getAttribute('data-del');
-        const next = load().filter(x => String(x.client_id) !== String(id));
-        save(next);
-        log('Удалён client_id=' + id);
-        render();
-      });
-    });
+  if (typeof fetchMe === "function") {
+    Promise.resolve(fetchMe()).catch(function () {}).finally(runNav);
+  } else {
+    runNav();
   }
-
-  document.getElementById('btnAdd').addEventListener('click', () => {
-    const st = {
-      name: inName.value.trim(),
-      client_id: inClient.value.trim(),
-      api_key: inKey.value.trim(),
-      vat: inVat.value.trim()
-    };
-    if(!st.name || !st.client_id || !st.api_key){
-      alert('Заполните: Название, Client-Id, Api-Key');
-      return;
-    }
-    const cur = load();
-    cur.push(st);
-    save(cur);
-    log('Добавлен: ' + st.name);
-    inName.value=''; inClient.value=''; inKey.value=''; inVat.value='';
-    render();
-  });
-
-  document.getElementById('btnExport').addEventListener('click', () => {
-    const stores = load();
-    const blob = new Blob([JSON.stringify(stores,null,2)], {type:'application/json;charset=utf-8'});
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'stores.export.json';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },0);
-    log('Экспорт: stores.export.json');
-  });
-
-  document.getElementById('fileImport').addEventListener('change', async (e) => {
-    const f = e.target.files && e.target.files[0];
-    if(!f) return;
-    try{
-      const txt = await f.text();
-      const arr = JSON.parse(txt);
-      if(!Array.isArray(arr)) throw new Error('JSON должен быть массивом');
-      save(arr);
-      log('Импортировано: ' + arr.length);
-      render();
-    }catch(err){
-      alert('Ошибка импорта: ' + (err && err.message ? err.message : String(err)));
-    }finally{
-      e.target.value='';
-    }
-  });
-
-  document.getElementById('btnReload').addEventListener('click', () => {
-    const stores = load();
-    log('Перечитано stores.secrets.js (слияние). Сейчас магазинов: ' + stores.length);
-    render();
-  });
-
-  document.getElementById('btnReset').addEventListener('click', () => {
-    if(!confirm('Сбросить локальные правки и вернуть только stores.secrets.js?')) return;
-    const stores = (window.ozonResetStoresToSecrets ? window.ozonResetStoresToSecrets() : []);
-    log('Сброс локальных правок. Сейчас магазинов: ' + stores.length);
-    render();
-  });
-
-  render();
-})();
+});
+// __MPUNIT_NAV_INIT__:stores
 </script>
 
-<script src="nav.js"></script>
-<script src="table_sort.js"></script>
-<script src="ozon_prices_detach_patch.js"></script>
 </body>
 </html>

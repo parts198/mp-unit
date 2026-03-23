@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Кабинет — mp-unit</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; background:#f6f7fb; margin:0; color:#111}
+    .top{background:#fff; border-bottom:1px solid #e8e8ee; padding:14px 18px; display:flex; align-items:center; justify-content:space-between; gap:12px}
+    .wrap{max-width:980px; margin:0 auto; padding:18px}
+    .card{background:#fff; border:1px solid #e8e8ee; border-radius:14px; padding:16px; box-shadow:0 8px 30px rgba(0,0,0,.04); margin-bottom:16px}
+    h1{margin:0; font-size:18px}
+    h2{margin:0 0 12px 0; font-size:16px}
+    .muted{color:#666; font-size:13px}
+    a{color:#0b5cff; text-decoration:none}
+    .btn2{display:inline-block; padding:8px 10px; border:1px solid #ddd; border-radius:10px; background:#fff; cursor:pointer; color:#111; text-decoration:none}
+    .nav{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
+    .grid2{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+    .pill{display:inline-block; padding:2px 8px; border:1px solid #eee; border-radius:999px; font-size:12px; color:#555; background:#fafafe}
+    ul{margin:0; padding-left:18px}
+    @media (max-width:720px){
+      .wrap{padding:12px}
+      .card{padding:12px}
+      .grid2{grid-template-columns:1fr}
+    }
+  </style>
+  <link rel="stylesheet" href="/cabinet.css">
+</head>
+<body>
+<div id="topnav"></div>
+  <div class="top">
+    <div>
+      <h1>Кабинет</h1>
+      <div class="muted" id="who"></div>
+    </div>
+    <div class="nav">
+      <a class="btn2" href="/cabinet.html">Кабинет</a>
+      <a class="btn2" href="/stores.html">Магазины</a>
+      <a class="btn2" href="/orders.html">Заказы</a>
+      <a class="btn2" href="/actions.html">Акции</a>
+      <a class="btn2" href="/fbo_planning.html">Планирование FBO</a>
+      <a class="btn2" href="/settings.html">Настройки</a>
+      <button class="btn2" type="button" onclick="logout()">Выйти</button>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="card">
+      <h2>Профиль</h2>
+      <div class="muted" id="profileBox">Загрузка…</div>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <h2>Подписка</h2>
+        <div class="muted">
+          Пока заглушка — подключим, когда появится API подписки.<br>
+          <span class="pill">Статус: —</span>
+          <span class="pill">До: —</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Баланс</h2>
+        <div class="muted">
+          Пока заглушка — подключим позже.<br>
+          <span class="pill">Баланс: —</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Мои магазины</h2>
+      <div class="muted" style="margin-bottom:10px">Список магазинов из API.</div>
+      <div id="storesBox" class="muted">Загрузка…</div>
+      <div style="margin-top:10px">
+        <a class="btn2" href="/stores.html">Открыть управление магазинами →</a>
+      </div>
+    </div>
+  </div>
+
+  <script src="/auth.js"></script>
+  <script>
+    requireAuth();
+
+    const who = document.getElementById("who");
+    const profileBox = document.getElementById("profileBox");
+    const storesBox = document.getElementById("storesBox");
+
+    (async () => {
+      // profile
+      let p = getProfile();
+      if (!p || !p.username) {
+        p = await fetchMe() || {};
+      }
+      who.textContent = p.username ? ("Привет, " + p.username) : "";
+      profileBox.innerHTML = `
+        <div><strong>${(p.username||"")}</strong></div>
+        <div>Email: ${(p.email||"—")}</div>
+        <div>Роль: ${(p.is_staff ? "админ" : "пользователь")}</div>
+      `;
+
+      // stores
+      const res = await apiFetch("/api/stores/");
+      if (!res.ok) {
+        const data = await res.json().catch(()=>({}));
+        storesBox.textContent = data.detail || ("Ошибка загрузки магазинов: " + res.status);
+        return;
+      }
+      const list = await res.json();
+      if (!list.length) {
+        storesBox.innerHTML = "Магазинов пока нет.";
+        return;
+      }
+      storesBox.innerHTML = "<ul>" + list.map(s => `<li><strong>${(s.name||"")}</strong> <span class="pill">#${s.id}</span></li>`).join("") + "</ul>";
+    })();
+  </script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  if (typeof requireAuth === "function") {
+    requireAuth();
+  }
+
+  var runNav = function () {
+    if (typeof renderCabinetNav === "function") {
+      renderCabinetNav("cabinet");
+    }
+  };
+
+  if (typeof fetchMe === "function") {
+    Promise.resolve(fetchMe()).catch(function () {}).finally(runNav);
+  } else {
+    runNav();
+  }
+});
+// __MPUNIT_NAV_INIT__:cabinet
+</script>
+
+</body>
+</html>

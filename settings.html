@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Настройки — mp-unit</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; background:#f6f7fb; margin:0; color:#111}
+    .top{background:#fff; border-bottom:1px solid #e8e8ee; padding:14px 18px; display:flex; align-items:center; justify-content:space-between; gap:12px}
+    .wrap{max-width:980px; margin:0 auto; padding:18px}
+    .card{background:#fff; border:1px solid #e8e8ee; border-radius:14px; padding:16px; box-shadow:0 8px 30px rgba(0,0,0,.04); margin-bottom:16px}
+    h1{margin:0; font-size:18px}
+    h2{margin:0 0 12px 0; font-size:16px}
+    .muted{color:#666; font-size:13px}
+    label{display:block; font-size:12px; color:#555; margin-top:10px}
+    input{width:100%; padding:10px 12px; margin-top:6px; border:1px solid #ddd; border-radius:10px; font-size:14px; background:#fff}
+    .actions{display:flex; gap:8px; justify-content:flex-end; align-items:center; flex-wrap:wrap; margin-top:12px}
+    .btn{padding:10px 12px; border:0; border-radius:10px; background:#0b5cff; color:#fff; font-weight:600; cursor:pointer}
+    .btn2{padding:8px 10px; border:1px solid #ddd; border-radius:10px; background:#fff; cursor:pointer; text-decoration:none; color:#111}
+    .msg{margin-top:10px; color:#b00020; font-size:13px; min-height:18px}
+    .ok{color:#0a7a2f}
+    @media (max-width:720px){
+      .wrap{padding:12px}
+      .card{padding:12px}
+      .actions{justify-content:stretch}
+      .actions .btn, .actions .btn2{width:100%}
+    }
+  </style>
+  <link rel="stylesheet" href="/cabinet.css">
+</head>
+<body>
+<div id="topnav"></div>
+  <div class="top">
+    <div>
+      <h1>Настройки</h1>
+      <div class="muted" id="who"></div>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center">
+      <a class="btn2" href="/stores.html">Магазины</a>
+      <button class="btn2" type="button" onclick="logout()">Выйти</button>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="card">
+      <h2>Смена пароля</h2>
+      <div class="muted">Пароль должен быть минимум 8 символов.</div>
+      <div id="msg" class="msg"></div>
+
+      <label>Текущий пароль</label>
+      <input id="old_password" type="password" autocomplete="current-password" />
+
+      <label>Новый пароль</label>
+      <input id="new_password" type="password" autocomplete="new-password" />
+
+      <div class="actions">
+        <button class="btn2" id="toggleBtn" type="button">👁 Показать</button>
+        <button class="btn" id="saveBtn" type="button">Сменить пароль</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/auth.js"></script>
+  <script>
+    requireAuth();
+
+    const who = document.getElementById("who");
+    const p = getProfile();
+    who.textContent = p.username ? ("Привет, " + p.username) : "";
+
+    const msg = document.getElementById("msg");
+    const toggleBtn = document.getElementById("toggleBtn");
+    const saveBtn = document.getElementById("saveBtn");
+
+    toggleBtn.addEventListener("click", () => {
+      const a = document.getElementById("old_password");
+      const b = document.getElementById("new_password");
+      const next = (a.type === "password") ? "text" : "password";
+      a.type = next; b.type = next;
+    });
+
+    saveBtn.addEventListener("click", async () => {
+      msg.classList.remove("ok");
+      msg.textContent = "";
+
+      const old_password = (document.getElementById("old_password").value || "").trim();
+      const new_password = (document.getElementById("new_password").value || "").trim();
+
+      if (!old_password || !new_password) { msg.textContent = "Заполните текущий и новый пароль."; return; }
+      if (new_password.length < 8) { msg.textContent = "Новый пароль должен быть минимум 8 символов."; return; }
+
+      const res = await apiFetch("/auth/change-password/", { method:"POST", body:{ old_password, new_password } });
+      const data = await res.json().catch(()=> ({}));
+
+      if (!res.ok) {
+        msg.textContent = data.detail || JSON.stringify(data) || ("Ошибка: " + res.status);
+        return;
+      }
+
+      document.getElementById("old_password").value = "";
+      document.getElementById("new_password").value = "";
+      msg.classList.add("ok");
+      msg.textContent = "Пароль изменён.";
+    });
+  </script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  if (typeof requireAuth === "function") {
+    requireAuth();
+  }
+
+  var runNav = function () {
+    if (typeof renderCabinetNav === "function") {
+      renderCabinetNav("settings");
+    }
+  };
+
+  if (typeof fetchMe === "function") {
+    Promise.resolve(fetchMe()).catch(function () {}).finally(runNav);
+  } else {
+    runNav();
+  }
+});
+// __MPUNIT_NAV_INIT__:settings
+</script>
+
+</body>
+</html>
