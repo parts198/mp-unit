@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Вход — mp-unit</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; background:#f6f7fb; margin:0;}
+    .wrap{min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px;}
+    .card{width:420px; background:#fff; border:1px solid #e8e8ee; border-radius:12px; padding:20px; box-shadow:0 8px 30px rgba(0,0,0,.06)}
+    h1{margin:0 0 14px 0; font-size:22px}
+    label{display:block; font-size:12px; color:#555; margin-top:10px}
+    input{width:100%; padding:10px 12px; margin-top:6px; border:1px solid #ddd; border-radius:10px; font-size:14px}
+    button{width:100%; padding:10px 12px; margin-top:14px; border:0; border-radius:10px; background:#0b5cff; color:#fff; font-weight:600; cursor:pointer}
+    .msg{margin-top:10px; color:#b00020; font-size:13px; min-height:18px}
+    a{color:#0b5cff; text-decoration:none}
+    .row{margin-top:10px; font-size:13px}
+    .muted{color:#666; font-size:13px}
+    .btn2{display:inline-block; padding:8px 10px; border:1px solid #ddd; border-radius:10px; background:#fff; cursor:pointer}
+    .ok{color:#0a7a2f}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Вход</h1>
+      <div id="msg" class="msg"></div>
+
+      <label>Логин или email</label>
+      <input id="username" autocomplete="username" />
+
+      <label>Пароль</label>
+      <input id="password" type="password" autocomplete="current-password" />
+
+      <button id="btn" type="button">Войти</button>
+
+      <div class="row">
+        Нет аккаунта? <a href="/register.html">Регистрация</a><br>
+        <a href="/forgot-password.html">Забыли пароль?</a>
+      </div>
+
+      <div class="muted" style="margin-top:12px">
+        Не пришло письмо подтверждения?
+        <button class="btn2" id="resendVerifyBtn" type="button" style="margin-left:8px">Отправить ещё раз</button>
+      </div>
+      <div class="msg" id="resendVerifyMsg"></div>
+    </div>
+  </div>
+
+  <script src="/auth.js"></script>
+  <script>
+    const msg = document.getElementById("msg");
+
+    document.getElementById("btn").addEventListener("click", async () => {
+      msg.textContent = "";
+      const u = document.getElementById("username").value.trim();
+      const p = document.getElementById("password").value;
+      try {
+        await login(u, p);
+        window.location.href = "/stores.html";
+      } catch (e) {
+        msg.textContent = e.message || "Не удалось войти. Проверьте логин/пароль.";
+      }
+    });
+
+    (function(){
+      const btn = document.getElementById("resendVerifyBtn");
+      const out = document.getElementById("resendVerifyMsg");
+      if (!btn) return;
+
+      btn.addEventListener("click", async () => {
+        if (out) { out.classList.remove("ok"); out.textContent = ""; }
+
+        const v = (document.getElementById("username").value || "").trim().toLowerCase();
+        if (!v || v.indexOf("@") < 0) {
+          if (out) out.textContent = "Введите email в поле «Логин или email», затем нажмите ещё раз.";
+          return;
+        }
+
+        // endpoint должен существовать на бэке: /auth/resend-verify/
+        const res = await apiFetch("/auth/resend-verify/", { method: "POST", body: { email: v }, auth: false });
+        await res.json().catch(()=> ({}));
+
+        if (out) {
+          out.classList.add("ok");
+          out.textContent = "Если аккаунт существует и не активирован — письмо отправлено.";
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Подтверждение email — mp-unit</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; background:#f6f7fb; margin:0; color:#111}
+    .wrap{max-width:520px; margin:0 auto; padding:24px}
+    .card{background:#fff; border:1px solid #e8e8ee; border-radius:14px; padding:18px;
+      box-shadow:0 8px 30px rgba(0,0,0,.04); margin-top:40px}
+    h1{margin:0 0 10px 0; font-size:20px}
+    .muted{color:#666; font-size:13px}
+    .msg{margin-top:12px; color:#b00020; font-size:13px; min-height:18px}
+    .ok{color:#0a7a2f}
+    .actions{display:flex; gap:10px; justify-content:space-between; align-items:center; margin-top:14px; flex-wrap:wrap}
+    .btn{padding:10px 12px; border:0; border-radius:10px; background:#0b5cff; color:#fff; font-weight:600; cursor:pointer; text-decoration:none; display:inline-block}
+    .btn2{padding:10px 12px; border:1px solid #ddd; border-radius:10px; background:#fff; cursor:pointer; text-decoration:none; color:#111; display:inline-block}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Подтверждение email</h1>
+      <div class="muted">Проверяем ссылку…</div>
+      <div id="msg" class="msg"></div>
+
+      <div class="actions">
+        <a class="btn2" href="/login.html">← Войти</a>
+        <a class="btn" id="goBtn" href="/login.html" style="display:none">Войти</a>
+      </div>
+    </div>
+  </div>
+
+  <script src="/auth.js"></script>
+  <script>
+    const msg = document.getElementById("msg");
+    const goBtn = document.getElementById("goBtn");
+
+    function qp(name){
+      const u = new URL(window.location.href);
+      return (u.searchParams.get(name) || "").trim();
+    }
+
+    (async () => {
+      const uid = qp("uid");
+      const token = qp("token");
+
+      if (!uid || !token) {
+        msg.textContent = "Ссылка некорректна: нет uid/token.";
+        return;
+      }
+
+      const res = await apiFetch(`/auth/verify-email/?uid=${encodeURIComponent(uid)}&token=${encodeURIComponent(token)}`, {
+        method: "GET"
+      });
+
+      const data = await res.json().catch(()=> ({}));
+      if (!res.ok) {
+        msg.textContent = data.detail || JSON.stringify(data) || ("Ошибка: " + res.status);
+        return;
+      }
+
+      msg.classList.add("ok");
+      msg.textContent = "Готово! Email подтверждён. Теперь можно войти.";
+      goBtn.style.display = "inline-block";
+    })();
+  </script>
+</body>
+</html>

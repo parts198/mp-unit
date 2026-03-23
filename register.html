@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Регистрация — mp-unit</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; background:#f6f7fb; margin:0; color:#111}
+    .wrap{min-height:100vh; display:flex; align-items:center; justify-content:center; padding:18px}
+    .card{width:100%; max-width:520px; background:#fff; border:1px solid #e8e8ee; border-radius:14px; padding:20px; box-shadow:0 8px 30px rgba(0,0,0,.06)}
+    h1{margin:0 0 10px 0; font-size:22px}
+    label{display:block; font-size:12px; color:#555; margin-top:12px}
+    input{width:100%; padding:10px 12px; margin-top:6px; border:1px solid #ddd; border-radius:10px; font-size:14px}
+    .btn{margin-top:16px; width:100%; padding:10px 12px; border:0; border-radius:10px; background:#0b5cff; color:#fff; font-weight:700; cursor:pointer}
+    .muted{color:#666; font-size:13px}
+    .msg{margin:10px 0 0 0; color:#b00020; font-size:13px; min-height:18px}
+    a{color:#0b5cff; text-decoration:none}
+    @media (max-width:540px){ .card{padding:16px} }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Регистрация</h1>
+      <div id="msg" class="msg"></div>
+
+      <label>Логин</label>
+      <input id="username" autocomplete="username" placeholder="например: marketplace" />
+
+      <label>Email</label>
+      <input id="email" autocomplete="email" placeholder="name@example.com" />
+
+      <label>Пароль</label>
+      <input id="password" type="password" autocomplete="new-password" placeholder="Минимум 8 символов" />
+
+      <label>Пароль ещё раз</label>
+      <input id="password2" type="password" autocomplete="new-password" placeholder="Повторите пароль" />
+
+      <button class="btn" id="btn">Создать аккаунт</button>
+
+      <div class="muted" style="margin-top:12px">
+        Уже есть аккаунт? <a href="/login.html">Войти</a>
+      </div>
+    </div>
+  </div>
+
+  <script src="/auth.js"></script>
+  <script>
+    const msg = document.getElementById("msg");
+    const btn = document.getElementById("btn");
+
+    function showErr(e){
+      if (!e) { msg.textContent = ""; return; }
+      if (typeof e === "string") { msg.textContent = e; return; }
+      // DRF errors: {field:[...]} or {detail:"..."}
+      if (e.detail) { msg.textContent = e.detail; return; }
+      const firstKey = Object.keys(e)[0];
+      if (firstKey) {
+        const v = e[firstKey];
+        msg.textContent = Array.isArray(v) ? v.join(", ") : String(v);
+        return;
+      }
+      msg.textContent = "Не удалось зарегистрироваться. Проверьте данные.";
+    }
+
+    btn.addEventListener("click", async () => {
+      showErr("");
+      btn.disabled = true;
+
+      const username = document.getElementById("username").value.trim();
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+      const password2 = document.getElementById("password2").value;
+
+      if (!email || !password || !password2) {
+        showErr("Заполните email и пароль.");
+        btn.disabled = false;
+        return;
+      }
+      if (password !== password2) {
+        showErr("Пароли не совпадают.");
+        btn.disabled = false;
+        return;
+      }
+      if (password.length < 8) {
+        showErr("Пароль должен быть минимум 8 символов.");
+        btn.disabled = false;
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/auth/register/`, {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ username, email, password, password2 })
+        });
+
+        const data = await res.json().catch(()=> ({}));
+        if (!res.ok) {
+          showErr(data);
+          btn.disabled = false;
+          return;
+        }
+
+        // УСПЕХ: сразу логинимся (можно по email или username — оба поддерживаются)
+        msg.style.color = "#0a7b2a";
+        msg.textContent = "Аккаунт создан. Выполняю вход…";
+
+        await login(email || username, password);
+
+        window.location.href = "/stores.html";
+      } catch (e) {
+        showErr(e?.message || "Ошибка сети.");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
