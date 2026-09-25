@@ -60,7 +60,7 @@ mcp = MCPServer(
     auth=AuthSettings(
         issuer_url=AnyHttpUrl(ISSUER),
         resource_server_url=AnyHttpUrl(PUBLIC_URL),
-        required_scopes=[READ_SCOPE],
+        required_scopes=[READ_SCOPE, WRITE_SCOPE],
         validate_token_resource=True,
     ),
 )
