@@ -1,0 +1,29 @@
+name: mcp gateway ci
+
+on:
+  pull_request:
+    paths:
+      - "infra/mcp/**"
+      - ".github/workflows/mcp-gateway-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: shell syntax
+        run: bash -n infra/mcp/install.sh
+      - name: python syntax
+        run: python -m py_compile infra/mcp/server.py
+      - name: install dependencies
+        run: pip install -r infra/mcp/requirements.txt
+      - name: import against current mcp sdk
+        env:
+          MCP_PUBLIC_URL: https://mcp.example.com/mcp
+          AUTH0_ISSUER: https://example.eu.auth0.com/
+          AUTH0_AUDIENCE: https://mcp.example.com/mcp
+        run: python -c "import sys; sys.path.insert(0, 'infra/mcp'); import server; print(server.mcp)"
