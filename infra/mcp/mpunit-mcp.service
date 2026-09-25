@@ -1,0 +1,24 @@
+[Unit]
+Description=MP Unit MCP gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mpunit-mcp
+Group=mpunit-mcp
+SupplementaryGroups=systemd-journal
+EnvironmentFile=/etc/mpunit-mcp.env
+WorkingDirectory=/opt/mpunit-mcp
+ExecStart=/opt/mpunit-mcp/.venv/bin/python /opt/mpunit-mcp/server.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/mp-unit-staging /opt/ozon-unit /opt/mpunit-mcp
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
